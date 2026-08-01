@@ -4,24 +4,26 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { css } from '@/lib/style';
+import { resizeImage } from '@/lib/image';
+import type { Nutrition } from '@/lib/nutrition';
 
 type Stage = 'capture' | 'preview' | 'analyzing' | 'result' | 'error' | 'done';
 
-// SCR-04 食事記録 — Claude Design のモックを忠実に移植（撮影→解析→記録の状態機械）
-// ※ 解析は現状モック（2.2s）。実装では POST /api/meals/analyze（AI Gateway）に接続する。
+// SCR-04 食事記録 — 撮影→AI Gateway(Gemini)で解析→記録（写真は保存しない・ADR-0003）
 export default function MealsPage() {
   const router = useRouter();
   const [dark, setDark] = useState(true);
   const [stage, setStage] = useState<Stage>('capture');
   const [url, setUrl] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [nutrition, setNutrition] = useState<Nutrition | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>('');
   const [toast, setToast] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     return () => {
       if (url) URL.revokeObjectURL(url);
-      clearTimeout(timer.current);
       clearTimeout(toastTimer.current);
     };
   }, [url]);
@@ -38,23 +40,42 @@ export default function MealsPage() {
     const f = e.target.files?.[0];
     if (!f) return;
     if (url) URL.revokeObjectURL(url);
+    setFile(f);
     setUrl(URL.createObjectURL(f));
     setStage('preview');
   };
-  const analyze = () => {
+  const analyze = async () => {
+    if (!file) return;
     setStage('analyzing');
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setStage('result'), 2200); // TODO: /api/meals/analyze
+    try {
+      const resized = await resizeImage(file); // 長辺1024pxへ（ADR-0003）
+      const form = new FormData();
+      form.append('image', resized, 'meal.jpg');
+      const res = await fetch('/api/meals/analyze', { method: 'POST', body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setErrorMsg(body?.message || '解析に失敗しました');
+        setStage('error');
+        return;
+      }
+      const data: Nutrition = await res.json();
+      setNutrition(data);
+      setStage('result');
+    } catch {
+      setErrorMsg('通信に失敗しました。電波の良い場所でお試しください。');
+      setStage('error');
+    }
   };
   const retake = () => {
-    clearTimeout(timer.current);
     if (url) URL.revokeObjectURL(url);
     setUrl(null);
+    setFile(null);
+    setNutrition(null);
     setStage('capture');
   };
   const save = () => {
     setStage('done');
-    showToast('記録しました'); // TODO: POST /api/meals
+    showToast('記録しました'); // TODO: POST /api/meals（認証・保存の実装で接続）
   };
 
   const stepIdx = stage === 'capture' ? 0 : stage === 'preview' || stage === 'analyzing' ? 1 : 2;
@@ -147,7 +168,7 @@ export default function MealsPage() {
                     <div style={css(`width:19px; height:19px; border-radius:999px; background:${v.warn}; color:#1a1204; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0`)}>!</div>
                     <div style={css('display:flex; flex-direction:column; gap:4px')}>
                       <div style={css(`font-size:13px; font-weight:800; color:${v.warn}`)}>解析に失敗しました</div>
-                      <div style={css('font-size:12px; line-height:1.7; opacity:.7')}>料理が判別できませんでした。明るい場所で、皿全体が入るように撮り直してください。</div>
+                      <div style={css('font-size:12px; line-height:1.7; opacity:.7')}>{errorMsg || '料理が判別できませんでした。明るい場所で、皿全体が入るように撮り直してください。'}</div>
                     </div>
                   </div>
                   <button onClick={retake} style={css(`height:52px; border-radius:14px; border:none; background:${v.ctaBg}; color:${v.ctaFg}; font-size:17px; font-weight:800; cursor:pointer`)}>撮り直す</button>
@@ -155,32 +176,37 @@ export default function MealsPage() {
                 </div>
               )}
 
-              {stage === 'result' && (
+              {stage === 'result' && nutrition && (
                 <div style={css('display:flex; flex-direction:column; gap:15px')}>
                   <div style={css('display:flex; flex-direction:column; gap:5px')}>
                     <div style={css(`font-size:11px; font-weight:700; color:${v.accent}`)}>AIの推定結果</div>
                     <div style={css('display:flex; align-items:baseline; gap:9px; flex-wrap:wrap')}>
-                      <div style={css('font-size:21px; font-weight:800; letter-spacing:-0.02em')}>鶏の照り焼き定食</div>
-                      <div style={css('font-size:11px; opacity:.7')}>確度 高</div>
+                      <div style={css('font-size:21px; font-weight:800; letter-spacing:-0.02em')}>{nutrition.food_name}</div>
                     </div>
-                    <div style={css('font-size:12px; opacity:.75')}>ごはん / 鶏の照り焼き / 味噌汁 / ほうれん草のおひたし</div>
+                    {nutrition.dish_names?.length > 0 && (
+                      <div style={css('font-size:12px; opacity:.75')}>{nutrition.dish_names.join(' / ')}</div>
+                    )}
                   </div>
                   <div style={css(`display:flex; align-items:center; justify-content:space-between; gap:12px; padding:18px 16px; border-radius:14px; background:${v.ctaSoft}; border:1px solid ${v.accentBorder}`)}>
                     <div style={css(`font-size:12px; font-weight:700; color:${v.accent}`)}>タンパク質</div>
                     <div style={css('display:flex; align-items:baseline; gap:2px; font-variant-numeric:tabular-nums')}>
-                      <span style={css(`font-size:34px; font-weight:800; line-height:1; letter-spacing:-0.04em; color:${v.accent}`)}>38.4</span>
+                      <span style={css(`font-size:34px; font-weight:800; line-height:1; letter-spacing:-0.04em; color:${v.accent}`)}>{round1(nutrition.protein_g)}</span>
                       <span style={css(`font-size:15px; font-weight:700; color:${v.accent}; opacity:.75`)}>g</span>
                     </div>
                   </div>
                   <div style={css(`display:flex; flex-direction:column; border-radius:13px; background:${v.surface}; border:1px solid ${v.hairline}; overflow:hidden`)}>
-                    {[{ label: '鶏の照り焼き', p: '29.1 g' }, { label: 'ごはん', p: '3.8 g' }, { label: '味噌汁 / おひたし', p: '5.5 g' }].map((b, i) => (
+                    {[
+                      { label: 'カロリー', p: `${Math.round(nutrition.calories_kcal)} kcal` },
+                      { label: '糖質', p: `${round1(nutrition.sugar_g)} g` },
+                      { label: '脂質', p: `${round1(nutrition.fat_g)} g` },
+                    ].map((b, i) => (
                       <div key={i} style={css(`display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; border-bottom:1px solid ${v.hairline}`)}>
                         <span style={css('font-size:13px')}>{b.label}</span>
                         <span style={css('font-size:13px; font-weight:800; font-variant-numeric:tabular-nums')}>{b.p}</span>
                       </div>
                     ))}
                   </div>
-                  <div style={css('font-size:11px; opacity:.7; line-height:1.7')}>数値はタップで修正できます。写真は保存されません。</div>
+                  <div style={css('font-size:11px; opacity:.7; line-height:1.7')}>AIによる推定値です。写真は保存されません。</div>
                   <div style={css('display:flex; flex-direction:column; gap:10px')}>
                     <button onClick={save} style={css(`height:52px; border-radius:14px; border:none; background:${v.ctaBg}; color:${v.ctaFg}; font-size:17px; font-weight:800; cursor:pointer`)}>記録する</button>
                     <button onClick={retake} style={css(`height:46px; border-radius:12px; border:1px solid ${v.hairline}; background:transparent; color:inherit; font-size:14px; font-weight:700; cursor:pointer`)}>撮り直す</button>
@@ -195,7 +221,7 @@ export default function MealsPage() {
             <div style={css('margin-top:36px; display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center')}>
               <div style={css(`width:70px; height:70px; border-radius:999px; background:${v.ctaSoft}; border:2px solid ${v.fill}; display:flex; align-items:center; justify-content:center; font-size:30px; color:${v.accent}`)}>✓</div>
               <div style={css('font-size:18px; font-weight:800')}>記録しました</div>
-              <div style={css('font-size:13px; opacity:.6; line-height:1.9')}>鶏の照り焼き定食 ・ タンパク質 38.4g<br />今日は <span style={css(`color:${v.accent}; font-weight:800`)}>残り 9.6g</span></div>
+              <div style={css('font-size:13px; opacity:.6; line-height:1.9')}>{nutrition ? `${nutrition.food_name} ・ タンパク質 ${round1(nutrition.protein_g)}g` : ''}</div>
               <div style={css('display:flex; flex-direction:column; gap:10px; width:100%; margin-top:6px')}>
                 <button onClick={() => router.push('/')} style={css(`height:50px; border-radius:13px; border:none; background:${v.ctaBg}; color:${v.ctaFg}; font-size:16px; font-weight:800; cursor:pointer`)}>ホームに戻る</button>
                 <button onClick={retake} style={css(`height:46px; border-radius:12px; border:1px solid ${v.hairline}; background:transparent; color:inherit; font-size:14px; font-weight:700; cursor:pointer`)}>続けて記録する</button>
@@ -250,6 +276,8 @@ export function BottomNav({ active, accent, navBg, hairline }: { active: string;
     </nav>
   );
 }
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
 
 function vals(dark: boolean, _stage: Stage) {
   const fill = dark ? '#12d9a0' : '#047857';
