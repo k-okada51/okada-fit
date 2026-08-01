@@ -1,0 +1,11 @@
+# 依存・ビルド
+web/node_modules/
+web/.next/
+web/out/
+# 環境変数
+web/.env.local
+web/.env*.local
+# PoC（規約制約のデータ含む・別管理）
+poc/
+# OS
+.DS_Store
