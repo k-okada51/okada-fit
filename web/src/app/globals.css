@@ -47,3 +47,7 @@ a {
     color-scheme: dark;
   }
 }
+
+/* okada-fit: Claude Design モックの helmet 相当 */
+a { text-decoration: none; color: inherit; }
+html, body { margin: 0; padding: 0; }
