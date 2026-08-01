@@ -149,10 +149,12 @@ function vals(dark: boolean, monthOffset: number, setTip: (t: string) => void) {
     cells,
     stats: [
       { label: 'ジムに行った日数', value: wentCount, unit: '日' },
-      { label: 'P目標を達成した日', value: 18, unit: '日' },
-      { label: '平均タンパク質', value: avg, unit: 'g' },
+      { label: 'たんぱく質摂取目標を達成した日数', value: 18, unit: '日' },
+      { label: '平均たんぱく質摂取量', value: avg, unit: 'g' },
       { label: '週あたりのジム', value: Math.round((wentCount / (daysInMonth / 7)) * 10) / 10, unit: '回' },
     ],
+    // 記録履歴の表示範囲: 直近20件（案A・2026-08-01決定）。データは全期間保持し、表示だけ直近に絞る。
+    // TODO(Supabase): SELECT ... ORDER BY 日時 DESC LIMIT 20 で取得
     history: [
       { date: '7/31', title: '鶏の照り焼き定食', sub: '食事 ・ 682kcal', value: '38g', color: accent },
       { date: '7/31', title: 'プロテイン', sub: '食事 ・ 120kcal', value: '21g', color: accent },
