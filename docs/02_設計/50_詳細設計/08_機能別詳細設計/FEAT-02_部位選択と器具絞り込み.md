@@ -103,7 +103,7 @@ sequenceDiagram
 |---|---|---|
 | ① 検証 | Flutter（`validateBodyPart`） | enum 5値のみ通す。NG なら送信しない |
 | ② 送信 | `supabase_flutter` | JWT を自動付与。1往復のみ発行する |
-| ③ 認可 | Supabase（RLS） | 本人行だけを返す。**遮断の唯一の境界**（§10 #6） |
+| ③ 認可 | Supabase（RLS） | 起点の `training_menus` と中間の `machine_menus` で本人行だけを返す。**遮断の唯一の境界**（§5） |
 | ④ 整形 | Flutter（純関数） | ネスト構造を器具IDで畳み込み、種目名を集約し、整列して返す |
 
 - ①で弾いた値は送信しない。無駄な往復を作らない。
@@ -140,7 +140,7 @@ final rows = await supabase
 | `bodyPart` | 任意 | `BodyPart` enum（RULE-003 の5値）。`null` = 絞り込みなし（FEAT-01 の一覧用途と共用） |
 | `gymId` | 任意 | `[仮]` 正の整数。複数ジム運用時の追加絞り込み（§10 #3） |
 
-- `user_id` は引数に取らない。RLS が本人行に限定する（§10 #6・#7）。
+- `user_id` は引数に取らない。RLS が本人行に限定する（§5・ADR-0005）。
 - `gymId` を使う場合は埋め込み側へのフィルタになる。中間テーブルを挟むぶん経路が伸びる。
 - そのとき要る指定は2つ `[仮]`。
 
@@ -303,7 +303,7 @@ SQL を2本載せるが、**実装が範とするのは (1) の平坦形**であ
 ```sql
 -- FEAT-02: 部位 → 種目(training_menus) → 中間(machine_menus) → 器具(training_machines) の3ホップ絞り込み
 -- （RULE-004・AI不使用）
--- $1 = 認証済みユーザーの識別子（RLS が適用）, $2 = body_part（NULL のとき絞り込みなし）, $3 = gym_id（[仮]・NULL 可）
+-- $1 = auth.uid()（uuid・RLS が適用）, $2 = body_part（NULL のとき絞り込みなし）, $3 = gym_id（[仮]・NULL 可）
 SELECT DISTINCT
        m.id     AS id,
        m.name   AS name,
@@ -397,21 +397,35 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 
 ### RLS と性能の評価
 
+方針は ADR-0005 で確定した。正本は `../01_DB物理設計.md §3`。
+
+| 区分 | テーブル | ポリシー |
+|---|---|---|
+| 本人のみ | `training_menus`（起点） | `user_id = auth.uid()` |
+| 共通マスタ | `training_machines` / `gyms` | `TO authenticated USING (true)` |
+| 親経由 | `machine_menus` | `menu_id` の所有者が本人（`EXISTS`） |
+
 | 観点 | 内容 |
 |---|---|
-| RLS の起点 | `training_menus` は `user_id = auth.uid()` 相当で本人行のみ |
+| 「本人」の述語 | `users.id` は uuid で `auth.users.id` と一致する。`auth.uid()` と直接比較できる |
 | 他3テーブル | `training_machines`・`machine_menus`・`gyms` は `user_id` 列を持たない |
-| 帰結 | 同形のポリシーを書けない |
-| 方式の選択 | `training_menus` 経由の EXISTS か、全ユーザー共有マスタ扱いか（§10 #6） |
-| EXISTS の深さ | 中間テーブルのぶん1段深くなる（FEAT-01 §10 #14） |
-| 埋め込み先の RLS | 埋め込み先にも個別に効く。経路が `machine_menus` → `training_machines` の2段 |
-| ポリシー対象 | **2つに増えた**。片方が未整備だと器具が絞られない |
-| サーバ層 | 無い。RLS の設計が必須になる（§10 #6） |
+| 帰結 | 同形のポリシーは書けない。共通マスタと親経由に分けた |
+| EXISTS の深さ | `machine_menus` の1段だけ。器具に入れ子の EXISTS は張らない |
+| 埋め込み先の RLS | **埋め込み先にも個別に効く。** 経路が `machine_menus` → `training_machines` の2段 |
+| 絞り込みの担い手 | 起点の `training_menus` と中間の `machine_menus`。この2つが本人行に限定する |
+| `machine_menus` が未整備だと | 他人の紐づけ経由で他人の器具が混ざる |
+| サーバ層 | 無い。RLS が唯一の遮断機構になる |
 | 性能の前提 | 個人利用（NFR-SCALE-01：マルチテナント適用外） |
 | 想定件数 | 種目は数十件・器具は数百件・中間行は数百件 |
 | 性能見積 | `machine_menus` の2本の INDEX があれば NFR-PERF-02（≤1秒）を余裕で満たす |
 | 将来 | マルチユーザー化で `training_menus` が全ユーザー分に膨らむ（`../../30_データ・IF設計/01_データモデル.md §8-8`） |
 | 将来の影響 | 駆動表のフルスキャンが効く。INDEX は先に張る判断が妥当（§10 #5） |
+
+> ⚠️ 要確認（人間判断）: 共通マスタは認証済みなら誰でも読み書きできる（🟡 中）。
+>
+> - 対象は `training_machines` と `gyms`。器具そのものは他人からも見える。
+> - 本機能の絞り込みは `training_menus` 起点のため、**一覧に他人の器具は出ない**。
+> - 単一ユーザー運用（NFR-SCALE-01）では実害が無いと評価した。Phase2 で見直す。
 
 ## 6. エラー処理
 | ERR-ID | 検出層 | 発生条件 | 利用者向けメッセージ（意図） | retryable | ログ |
@@ -497,7 +511,7 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 | TC-FEAT02-05 | `bodyPart` が enum 外 | `tryParse` が `null`。ERR-MACHINE-020 として扱い、**PostgREST 呼び出しが発行されない** |
 | TC-FEAT02-06 | 部位の単一選択 | `SegmentedButton` から複数値が渡らない（ERR-MACHINE-021 の構造的担保） |
 | TC-FEAT02-07 | 未認証 | ERR-AUTH-001。ログイン画面へ誘導する |
-| TC-FEAT02-08 | 他ユーザーの器具の遮断 | 他ユーザーの `training_menus` に紐づく器具が返らない。**RLS が唯一の遮断機構**のため統合テストで検証する（§10 #6 の方式確定後に有効化） |
+| TC-FEAT02-08 | 他ユーザーの器具の遮断 | 他ユーザーの `training_menus` に紐づく器具が返らない。**RLS が唯一の遮断機構**のため統合テストで検証する（方式は ADR-0005 で確定・§5） |
 | TC-FEAT02-09 | 整列の決定性 | 同一データで常に `gymName`→`name`→`id` の順。DB の照合順序に依存しない |
 | TC-FEAT02-10 | 同名マシンの複数件 | 同名でも `id` が異なる器具は畳まれず件数分返る |
 | TC-FEAT02-11 | 性能（NFR-PERF-02） | 想定データ量で応答が1秒以内。往復が1回（N+1 が無い） |
@@ -526,9 +540,10 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 | 3 | 複数ジム運用時にどのジムの器具を出すか | 現状は全ジムの器具が混在する。本書は `gymName` を返し `gymId` 引数を`[仮]`提案した（`!inner` が2段要る・§3）。「今日行くジム」のUIか `gym_visits` の直近入館かは業務判断 | 🔴 高 |
 | 4 | ~~重複行（マシンと種目の対応関係）~~（**解決**） | 旧構成は単一FK `training_machines.menu_id` で1台が複数種目を持てず、同名マシンの重複登録を招いた。2026-08-08 に `machine_menus` を導入し解消。`DISTINCT` が要る（#10） | — |
 | 5 | 3ホップJOINの性能とINDEX設計 | データモデル §8-1 がINDEX考慮を明記。`uq_mm_machine_menu`・`ix_mm_menu` は反映済みで両方向が張れている。§5 の提案2本は未反映で、後付けを避け初期DDLに含めるのが妥当（NFR-MIGR-03） | 🟡 中 |
-| 6 | `training_machines`・`machine_menus`・`gyms` のRLS | 3表とも `user_id` 列が無く、EXISTS か共有マスタ扱いかで将来の可視範囲が変わる。PostgREST 直接で逃げ道が無く、埋め込み先にも個別にRLSが要る（§5）。片方が未整備だと器具が絞られない | 🔴 高 |
-| 7 | ユーザー識別子の紐付け | §5 の `$1` に何を渡すかは `users.id`(bigint) と `auth.uid()`(uuid) の紐付けが未確定のため決まらない | 🟡 中 |
-| 〃 | 〃 | これがRLS述語そのものになるため #6 と同時に決める。本書では方式を決めない | 〃 |
+| 6 | ~~`training_machines`・`machine_menus`・`gyms` のRLS~~（**解決**） | **2026-08-08 決定（ADR-0005）。** `training_machines`・`gyms` は共通マスタ（`TO authenticated USING (true)`）、`machine_menus` は親経由の `EXISTS`、起点の `training_menus` は `user_id = auth.uid()` で確定（§5） | — |
+| 〃 | 〃 | 埋め込み先にも個別にRLSが効く点は変わらない。`machine_menus` のポリシーを落とすと器具が絞られない | — |
+| 7 | ~~ユーザー識別子の紐付け~~（**解決**） | **案A で確定（ADR-0005）。** `users.id` を uuid にして `auth.users.id` と一致させた。§5 の `$1` は `auth.uid()` になる | — |
+| 〃 | 〃 | RLS 述語は `training_menus.user_id = auth.uid()`。#6 と同時に決着した | — |
 | 8 | 部位enum値が日本語であること | 格納値・クエリ値が日本語（RULE-003・DEC-B04）。URLエンコードは `supabase_flutter` 任せ | 🟢 低 |
 | 〃 | 〃 | 課題は表記変更が移行を伴う点と `String.compareTo` が読み順でない点（§4）。MVP では許容 | 〃 |
 | 9 | 横断方針の正本が未確定 | `../07_実装共通設計パターン.md` はテンプレートのままでエラー分類・リトライ方針の値スロットが空。本書は「再定義しない」方針のため、ERR-MACHINE-023 の retryable 判定などが正本側の確定待ち | 🟡 中 |
@@ -536,10 +551,12 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 | 11 | 絞り込み時に返す種目の範囲 | 部位で絞ると `menus` は一致した種目だけになり、全種目が要る FEAT-01・FEAT-03 に足りない | 🟡 中 |
 | 〃 | 〃 | 案は (a) 絞り込みなしで引き直す、(b) 常に全種目とし一致をフラグで持つ。本書は (a) を`[仮]` | 〃 |
 
-> ⚠️ 要確認（人間判断）: **後継ADRの起票と段3の改訂が必要。**
+> ~~⚠️ 要確認（人間判断）: **後継ADRの起票と段3の改訂が必要。**~~（**解決**・2026-08-08）
 > - 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> - ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
-> - `30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同じ。
+> - ~~ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。~~
+> - ~~`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同じ。~~
+> - **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
+> - ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 > ⚠️ 要確認（人間判断）: **段3の `GET /api/machines?body_part=` は改訂が要る。**
 > - 本書では PostgREST 直接（`training_menus` の埋め込み select）に置き換えた。
 > - 段3の契約表から本エンドポイントを削除し、テーブル直アクセスとして書き直す。
@@ -547,7 +564,9 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 > ⚠️ 要確認（人間判断）: #1 器具0件のとき FEAT-03（AIメニュー生成）へ進ませるか。進ませる場合、AIに「器具なし」をどう伝え、EXT-01 の課金をどう正当化するか。
 > ⚠️ 要確認（人間判断）: #3 絞り込みに `gymId` を追加するか。追加しない場合、複数ジムの器具が混在する挙動を仕様として認めるか。
 > ⚠️ 要確認（人間判断）: #5 §5 に提案として残した2本のINDEX（`ix_train_menus_user_body_part` / `ix_train_machines_gym`）を `../01_DB物理設計.md §3` に反映するか。本書ではDDLを追加していない（`machine_menus` の2本は物理設計側で反映済み）。
-> ⚠️ 要確認（人間判断）: #6 `training_machines`・`machine_menus`・`gyms` のRLSポリシー方式（`training_menus` 経由の EXISTS か、共有マスタ扱いか）。PostgREST 直接のため、これが唯一の遮断機構になる。
+> ~~要確認（人間判断）: #6 `training_machines`・`machine_menus`・`gyms` のRLSポリシー方式（`training_menus` 経由の EXISTS か、共有マスタ扱いか）。~~（**解決**・ADR-0005）
+> - 共通マスタ（`training_machines`・`gyms`）と親経由（`machine_menus`）に分けて確定した。§5 が詳細。
+> - 残る要確認は「共通マスタを誰でも書き換えられる」点のみ（§5・Phase2）。
 > ⚠️ 要確認（人間判断）: #11 部位で絞ったときに返す種目を「一致した分だけ」にするか「その器具の全種目」にするか。FEAT-03 に渡す情報量が変わる。
 > ⚠️ 要確認（人間判断）: #2 器具一覧の取得（FEAT-01）と部位絞り込み（FEAT-02）を `machine_repository.dart` の同一メソッドで兼ねるか分けるか。
 

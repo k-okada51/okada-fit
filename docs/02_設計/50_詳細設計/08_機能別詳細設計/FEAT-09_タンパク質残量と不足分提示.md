@@ -265,14 +265,14 @@ declare
   v_result jsonb;
 begin
   -- 旧 Q1 に相当: 体重＋当日のタンパク質摂取合計を1文で取得
-  --   ⚠️ WHERE の述語は auth.uid() と users.id の紐付け方式に依存（末尾の要確認）
+  --   users.id・meal_logs.user_id は uuid で auth.uid() と同値（案A・ADR-0005）。直接比較で書ける。
   select u.weight_kg, coalesce(sum(m.protein_g), 0)
     into v_weight, v_intake
     from users u
     left join meal_logs m
       on  m.user_id    = u.id
       and m.eaten_date = p_target_date
-   where u.id = <認証ユーザーに対応する users.id>
+   where u.id = auth.uid()
    group by u.weight_kg;
 
   -- 前提データの検証（判定規則の正本は FEAT-07）
@@ -333,10 +333,12 @@ $$;
 | 使用INDEX | `ix_meal_logs_user_date`（`meal_logs(user_id, eaten_date)`）が当日絞り込みに効く |
 | `foods` の走査 | 全件走査（数百件想定・INDEXを追加しない） |
 | RLS | `SECURITY INVOKER` のため呼び出しユーザーのポリシーが効く |
-| RLS（`users`・`meal_logs`） | `user_id = auth.uid()` 相当で本人行のみ |
-| RLS（`foods`） | **`user_id` を持たない全ユーザー共通マスタのため同じポリシーが書けない** |
-| `foods` の方針 `[仮]` | RLS を有効化し「認証済みユーザーは SELECT 可」とする（§10 #1） |
-| 同上 | 書き込みは FEAT-10 の取込経路のみ |
+| 型 | `users.id`・`meal_logs.user_id` はいずれも **uuid**（`auth.uid()` と同値・ADR-0005） |
+| RLS（`users`） | `id = auth.uid()` の直接比較で本人行のみ（3区分の「本人のみ」） |
+| RLS（`meal_logs`） | `user_id = auth.uid()` の直接比較で本人行のみ（同上） |
+| RLS（`foods`） | **共通マスタで確定**（2026-08-08）。`user_id` を持たず、`TO authenticated USING (true)` で認証済みなら全件参照できる |
+| `foods` の書き込み | 認証済みなら誰でも書ける。実運用の経路は FEAT-10 の取込（`import_foods`）のみ |
+| RLS の正本 | `../01_DB物理設計.md` §3。3区分の横断方針は `../07_実装共通設計パターン.md` §1 |
 | トランザクション境界 | 明示的トランザクションを張らない |
 | 同上 | 関数本体が単一の暗黙トランザクションで動く（参照のみ・Read Committed） |
 | 冪等・リトライ | 参照系のため冪等。自動リトライはしない |
@@ -420,7 +422,7 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | # | ファイル | 役割 | 主な定義 |
 |---|---|---|---|
 | 1 | `supabase/migrations/*.sql` | RPC `get_protein_remaining` の定義（§5）。`GRANT EXECUTE TO authenticated` | `create function public.get_protein_remaining(p_target_date date, p_limit int default 3) returns jsonb` |
-| 1 | 同上 | `foods` の RLS ポリシー（`[仮]`・§10 #1） | 同上 |
+| 1 | 同上 | `foods` の RLS ポリシー（共通マスタ区分・`TO authenticated USING (true)`） | 同上 |
 | 2 | `app/lib/data/protein_repository.dart` | RPC 呼び出しと `PostgrestException` の ERR-ID 写像（§6） | `Future<ProteinRemaining> fetchRemaining({required String targetDate})` |
 | 3 | `app/lib/features/dashboard/protein_remaining.dart` | 応答のモデルクラス。`fromJson` で型付けする（Dart のため zod は使わない） | `class ProteinRemaining` ／ `class ProteinSuggestion` |
 | 3 | 同上 | 同上 | `factory ProteinRemaining.fromJson(Map<String, dynamic> json)` |
@@ -465,7 +467,7 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | `foods` に `user_id` が無く RLS の設計が他表と異なる | `foods` は分離キーが無く `auth.uid()` でポリシーを書けない。**共通マスタか私有データ（FEAT-10）かが未定義**で、私有なら他人の食品名が見え NFR-SCALE-01 で破綻する。本書は共通マスタ `[仮]` | 🟡 中 |
+| 1 | ~~`foods` に `user_id` が無く RLS の設計が他表と異なる~~（**解決**） | ~~共通マスタか私有データ（FEAT-10）かが未定義~~ → **共通マスタで確定**（2026-08-08・ADR-0005）。所有者列は持たない。RLS は3区分の「共通マスタ」＝`TO authenticated USING (true)`（§5.2） | — |
 | 2 | `foods.protein_amount` の**単位が未定義** | 物理設計は「タンパク質量(g)」としか定義せず、1食分／100g／1個のどれかが未定。残量との差で並べる抽出（RULE-005）が意味を成さない。CSV 列設計（FEAT-10）・分量列の要否と併せて確定が要るが、本書は指摘に留める | 🔴 高 |
 | 3 | 「当日」の定義とタイムゾーン（FEAT-05・FEAT-08 と共通） | `eaten_date` の基準 TZ が未定義。UTC の `current_date` だと JST 0〜9時の記録が前日に入り残量が過大になる。本書は Flutter が JST 当日を渡す `[仮]` | 🟡 中 |
 | 4 | `meal_logs.intake_count` を SUM に掛けるべきか不明 | `01_データモデル.md §8-6` の未解決。「何人前」なら `SUM(protein_g * intake_count)`、「便宜上の個数」なら掛けない。本書は**掛けない** `[仮]`（FEAT-08 と対） | 🔴 高 |
@@ -477,11 +479,14 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | 10 | 丸め済み値の見た目の不整合 | `target_g − intake_g` と `remaining_g` が丸めにより最大 0.1g ずれうる。画面での再計算を禁止して回避しているが、将来クライアント側で差分表示を作ると再発する | 🟢 低 |
 | 11 | 業務判定を RPC に置くことが横断方針と衝突する | 横断方針は「RPC は永続化だけ。業務判定は純関数に残す」としている。本書は §5.1 の (a) を採り RULE-002・RULE-005 を SQL に置いた。**どちらかの改訂が必要**（集計系 RPC を例外とするのが妥当） | 🟡 中 |
 | 12 | RULE-001 の係数と丸めが `nutrition.dart`（FEAT-07）と本 RPC に二重定義されている（§4.3） | 直し忘れると SCR-05 と SCR-01 の表示が食い違う。緩和案は (a) 係数をDB側1箇所に置く、(b) SCR-05 も RPC 経由、(c) 本書＝TC-FEAT09-17 で検出 `[仮]` | 🟡 中 |
+| 13 | 共通マスタは認証済みなら誰でも書き換えられる（#1 の確定に伴う新規） | `foods` の RLS は `TO authenticated USING (true)`。単一利用者の現行運用では実害が無いが、複数利用者（NFR-SCALE-01・Phase2）では他人の食品マスタを壊せる。Phase2 で書き込みを分離する見直しが要る | 🟡 中 |
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
-> `30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。
-> 後継ADRの起票と段3の改訂が必要。
+> ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
+> ~~一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。~~
+> ~~`30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。~~
+> ~~後継ADRの起票と段3の改訂が必要。~~
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
+> ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
 > ⚠️ 要確認（人間判断）: 段3の契約表を改訂すること。
 > 旧 `GET /api/protein/remaining` は RPC `get_protein_remaining` に置き換わる。
@@ -491,10 +496,12 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 > ⚠️ 要確認（人間判断）: 候補抽出を RPC 内の `ORDER BY` / `LIMIT` で行う方針（§5.1 の (a)）を承認するか。
 > 承認する場合、`../07_実装共通設計パターン.md` の「RPC には永続化だけを置く」方針に集計系 RPC の例外を明記すること（#11）。
 
-> ⚠️ 要確認（人間判断）: `foods` の性格を確定すること。
-> (a) `protein_amount` の単位（1食分／100g／1個）を FEAT-10 の CSV 列設計とセットで決める。
-> 決まらないと RULE-005 の提示は数値としての意味を持たない（#2）。
-> (b) 全ユーザー共通マスタか本人の私有データか。私有なら `foods.user_id` の追加＝スキーマ変更が必要で、RLS ポリシーの書き方も変わる（#1）。
+> ⚠️ 要確認（人間判断）: `foods.protein_amount` の単位（1食分／100g／1個）を FEAT-10 の CSV 列設計とセットで確定すること。
+> 決まらないと RULE-005 の提示は数値としての意味を持たない（#2）。**本件は未解決のまま残る。**
+
+> ~~⚠️ 要確認（人間判断）: `foods` は全ユーザー共通マスタか本人の私有データか。私有なら `foods.user_id` の追加＝スキーマ変更が必要（#1）。~~（**解決**・2026-08-08）
+> **共通マスタで確定**（ADR-0005）。`foods` に所有者列を追加しない。RLS は「共通マスタ」区分（§5.2）。
+> 残る懸念は Phase2 での書き込み分離のみ（#13）。
 
 > ⚠️ 要確認（人間判断）: `intake_g` の算出前提を確定すること。どちらも値が変われば残量・提示候補がすべて変わる。
 > (a) `meal_logs.intake_count` を乗じるか（`01_データモデル.md §8-6` の未解決・#4）。
@@ -504,9 +511,9 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 > ⚠️ 要確認（人間判断）: 提示件数 N＝3 と単品N件方式（組み合わせ提案なし）でよいか（#7）。
 > あわせて `weight_kg` 未設定時をエラー（ERR-PROFILE-020）とするか正常応答で返すかを決めてください（#5）。
 
-> ⚠️ 要確認（人間判断）: `users.id`(bigint) と Supabase `auth.uid()`(uuid) の紐付け方式は未確定。
-> 正本は `../06_DB設計規約.md`。
-> §5 の RPC の `WHERE` 述語と RLS ポリシーがこの方式に依存するため、確定するまで SQL は論理仕様として扱う。
+> ~~⚠️ 要確認（人間判断）: `users.id` と Supabase `auth.uid()` の紐付け方式は未確定。確定するまで SQL は論理仕様として扱う。~~（**解決**・2026-08-08）
+> **案A で確定**（ADR-0005）。`users.id` は uuid で `auth.users.id` と同値。`meal_logs.user_id` も uuid。
+> §5.1 の `WHERE u.id = auth.uid()` はそのまま実装できる。正本は `../01_DB物理設計.md` §3・`../06_DB設計規約.md`。
 
 > ⚠️ 要確認（人間判断）: PostgREST の挙動2点が `[仮]`。§6 の写像を実装する前に公式ドキュメントで確認すること。
 > (a) SQLSTATE `PTxxx` を HTTP ステータス xxx に写像すること。

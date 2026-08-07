@@ -165,6 +165,7 @@ status: draft
 
 > ⚠️ 要確認（人間判断）: 論点2について、本書は「代替経路を持たず縮退のみ」で書いている。別プロバイダへ二重化するなら EXT-ID の追加を伴う設計変更になる。
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）・`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。
+> ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001・ADR-0002・段3の API 契約は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。~~（**解決**・2026-08-08）
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票し、ADR-0001・ADR-0002 は Superseded にした。段3 `30_データ・IF設計/02_API設計.md` も改訂済み。
 
 > 関連: 共通・他の連携先＝[`README.md`](README.md) / 契約スキーマ＝`30_データ・IF設計/02_API設計.md` / ポーリングバッチ＝`../02_バッチ設計.md`。

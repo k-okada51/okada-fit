@@ -10,7 +10,9 @@ status: draft
 > ⚠️ **本フォルダはたたき台（2026-08-02 生成 / 2026-08-07 脱Vercel改訂）**。岡田さんのレビューで確定する。各ファイルの §10 に敵対的検証の指摘を残してあるので、**先に §10 だけを横断で読む**と論点が把握できる。
 
 > ⚠️ **Vercel は使わない**（2026-08-07 決定）。クライアントは Flutter、サーバは Supabase。
-> ADR-0001（Vercel AI Gateway）・ADR-0002（Next.js + Mantine）・`../../30_データ・IF設計/02_API設計.md`（`/api/*` 契約）は**まだ Vercel 前提のまま**。後継ADRの起票と段3の改訂が要る。
+> **ADR-0010**（Flutter + Supabase）・**ADR-0011**（Gemini API 直接）で確定済み（2026-08-08）。
+> ADR-0001 は `Superseded by ADR-0011`、ADR-0002 は `Superseded by ADR-0010`。
+> `../../30_データ・IF設計/02_API設計.md` も PostgREST／RPC／Edge Function へ改訂済み。
 
 ## 構成
 
@@ -66,7 +68,7 @@ Supabase
 | FEAT-07 | 必要タンパク質量の算出 | [FEAT-07_必要タンパク質量算出.md](FEAT-07_必要タンパク質量算出.md) | 専用APIなし（共有ロジック） | — | SCR-01 / SCR-05 |
 | FEAT-08 | 食事撮影・タンパク質計算 | [FEAT-08_食事撮影タンパク質計算.md](FEAT-08_食事撮影タンパク質計算.md) | Edge Function `analyze-meal` → PostgREST | **EXT-01** | SCR-04 |
 | FEAT-09 | タンパク質残量・不足分提示 | [FEAT-09_タンパク質残量と不足分提示.md](FEAT-09_タンパク質残量と不足分提示.md) | RPC `get_protein_remaining` | — | SCR-01 / SCR-04 |
-| FEAT-10 | 食事マスタCSVインポート | [FEAT-10_食事マスタCSVインポート.md](FEAT-10_食事マスタCSVインポート.md) | RPC `replace_foods` | — | SCR-05 |
+| FEAT-10 | 食事マスタCSVインポート | [FEAT-10_食事マスタCSVインポート.md](FEAT-10_食事マスタCSVインポート.md) | RPC `import_foods` | — | SCR-05 |
 
 > AI（EXT-01・Gemini API）を使うのは **FEAT-03 と FEAT-08 の2機能だけ**。器具の絞り込み（RULE-004）と不足分の食品提示（RULE-005）は**AI不使用の決定的処理**であり、この境界を崩さない（`../../10_システム基本設計/01_構成要素.md §1`）。
 
@@ -111,15 +113,31 @@ Supabase
 - 他機能は状態を持たない。一過性の記録イベントとして扱う（`../../30_データ・IF設計/03_ドメインイベント.md`）。
 
 ### 認証・分離
-- 全経路で Supabase Auth の認証が要る。DB側は RLS で本人行のみ（ADR-0004）。
-- `foods` だけは `user_id` を持たない共通マスタ。RLS の扱いが他と異なる。
+- 全経路で Supabase Auth の認証が要る。DB側は RLS が一次防御（ADR-0004）。
+- `users.id` は **uuid** で `auth.users.id` と同値（案A・ADR-0005）。各履歴の `user_id` も uuid。
+- そのため RLS は `auth.uid()` との**直接比較**で書ける。変換も対応表も要らない。
+- `users` の行は `auth.users` の AFTER INSERT トリガで作る。
+
+RLS は3区分のどれかに収まる。横断方針の正本は `../07_実装共通設計パターン.md` §1、DDL の正本は `../01_DB物理設計.md` §3。
+
+| 区分 | テーブル | ポリシーの述語 |
+|---|---|---|
+| **本人のみ** | `users` | `id = auth.uid()` |
+| 〃 | `training_menus` / `gym_visits` / `training_sessions` / `meal_logs` | `user_id = auth.uid()` |
+| **共通マスタ** | `gyms` / `training_machines` / `foods` | `TO authenticated USING (true)` |
+| **親経由** | `machine_menus` | `training_menus.user_id = auth.uid()` を `EXISTS` で辿る |
+| 〃 | `training_session_details` | `training_sessions.user_id = auth.uid()` を `EXISTS` で辿る |
+
+- `gyms` / `training_machines` / `foods` は**所有者列を持たない共通マスタ**（2026-08-08 確定）。認証済みなら誰でも読み書きできる。
+- 単一利用者の現行運用では実害が無い。Phase2（NFR-SCALE-01）で書き込みの絞り込みを見直す（`../07_実装共通設計パターン.md` §1 の ⚠️）。
 
 ### 器具と部位
 - 器具↔種目は**多対多**。中間テーブル `machine_menus` で結ぶ。
 - 部位は種目（`training_menus.body_part`）が持つ。**器具は種目経由で複数の部位に対応する**。
 - 部位での絞り込みは3ホップ。**`DISTINCT` が必須**（同一部位の種目を複数持つ器具が重複するため）。
 
-> ⚠️ 要確認（人間判断）: `users.id`（bigint）と `auth.uid()`（uuid）の紐付け方式が未確定。各機能ファイルは方式を決めず、正本の `../06_DB設計規約.md` を参照している。**実装着手の前に確定が要る**（RLSポリシーが書けないため）。
+> ~~⚠️ 要確認（人間判断）: `users.id` と `auth.uid()` の紐付け方式が未確定。実装着手の前に確定が要る（RLSポリシーが書けないため）。~~（**解決**・2026-08-08）
+> **案A で確定した**（ADR-0005）。`users.id` を uuid にして `auth.users.id` と同値にしたため、RLS は「認証・分離」の3区分表のとおり `auth.uid()` の直接比較で書ける。各機能ファイルの SQL は論理仕様ではなく実装仕様として読んでよい。正本は `../01_DB物理設計.md` §3・`../06_DB設計規約.md`。
 
 ## 設計PR4 の残作業（本フォルダの対象外）
 

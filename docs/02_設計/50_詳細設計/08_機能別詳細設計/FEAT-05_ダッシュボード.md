@@ -345,7 +345,7 @@ security invoker
 set search_path = public
 as $$
 declare
-  v_user_id bigint;
+  v_user_id uuid;          -- users.id は auth.users.id と同値の uuid（案A・ADR-0005）
   v_weight  numeric;
   v_intake  float8;
   v_heatmap json;
@@ -359,11 +359,11 @@ begin
   end if;
 
   -- (2) 本人の users 行を解決 → 無ければ ERR-DASHBOARD-002
-  --     auth.uid()(uuid) と users.id(bigint) の紐付け方式は未確定（§10-11・正本＝../06_DB設計規約.md）
+  --     案A（ADR-0005）により中間列は不要。id を auth.uid() と直接比較する
   select u.id
     into v_user_id
     from users u
-   where u.auth_user_id = auth.uid();   -- [仮]
+   where u.id = auth.uid();
   if not found then
     raise exception 'ERR-DASHBOARD-002' using errcode = 'PT409';
   end if;
@@ -449,8 +449,8 @@ $$;
 
 | 観点 | 内容 |
 |---|---|
-| RLS | `user_id = auth.uid()` 相当で本人行のみ。`security invoker` なので関数内でも効く |
-| RLS | `users.id`(bigint) と `auth.uid()`(uuid) の紐付け方式は未確定（正本＝`../06_DB設計規約.md`） |
+| RLS | `user_id = auth.uid()` の直接比較で本人行のみ。`security invoker` なので関数内でも効く |
+| RLS | `users` 自身の述語は `id = auth.uid()`。`users.id` は `auth.users.id` と同値の uuid（案A・ADR-0005） |
 | 往復回数 | 1（RPC 1本）。旧構成は2クエリを個別に発行していた |
 | トランザクション | 関数本体が暗黙の単一トランザクション。参照のみのため明示的な `begin` は書かない |
 | トランザクション | Q1/Q2 が同一スナップショットで読める。旧構成より改善する |
@@ -561,8 +561,9 @@ $$;
 | 8 | 週/月の境界規則がレスポンスに無い | `week`＝暦週か直近7日か、`month`＝当月1日〜末日か直近30日かが未定義（本書は暦基準を [仮]）。案A なら規則は Dart 側1箇所で済む。案B は RPC 内に規則があり Flutter 側で描画範囲を再計算＝二重実装になり、ズレると範囲が食い違う | 🟡 中 |
 | 9 | `intake_count` を掛けるか | 本書は `SUM(protein_g)` のみとした（§4 L2）。`intake_count`（摂取数）の業務的意味が未確定（`01_データモデル.md §8-6`）。FEAT-09 が異なる解釈を採ると**同じ当日摂取量が画面ごとに違う値になる** | 🟡 中 |
 | 10 | 全履歴保持と集計性能 | 保持期間の制限が無く（`01_データモデル.md §7`）行数は単調増加する。ただし Q1・Q2 とも走査対象は期間内に限定される（§5.5）。**month 表示では既存INDEXで足りるが**、「年」表示・累積統計・複数ユーザー化を足すと前提が変わり再評価が要る | 🟢 低 |
-| 11 | `users.id` と `auth.uid()` の紐付け未確定 | §5.4 の `u.auth_user_id = auth.uid()` は [仮]。bigint と uuid の対応方式が未確定（正本＝`../06_DB設計規約.md`）。RLS・RPC は `auth.uid()` 起点のため、確定まで `v_user_id` の解決方法が決まらない | 🟡 中 |
+| 11 | ~~`users.id` と `auth.uid()` の紐付け未確定~~（**解決**） | **案A確定**（ADR-0005）。`users.id` を `auth.users.id` と同値の uuid にする。中間列は持たない。§5.4 の本人行解決は `u.id = auth.uid()` になり、`v_user_id` も uuid で確定した | — |
 | 12 | RULE-001 の計算場所 | 構成変更で新たに生じた論点。旧構成は `target_g` をサーバ側で算出していた。集計を RPC に寄せると RULE-001（体重×2g）が FEAT-07 と二重定義になるため、本書は Dart 側算出を [仮] とした（戻り値と画面 DTO の形は一致しない） | 🟡 中 |
+| 13 | 過去期間の達成率が遡って書き換わる | 体重は現在値1点のみを持つと確定した（ADR-0009）。`weight_kg` に履歴が無いため、過去日・過去期間のゲージも**現在の体重**で `target_g` を計算する。体重を変えると過去の達成率が事後的に変わる。SCR-01 に**誤解を与えないUI表現が要る**（どの体重を基準にした値かの明示・注記） | 🟡 中 |
 
 > ⚠️ 要確認（人間判断）: #1 日付範囲の解決を Flutter（端末TZ・案A）にするか RPC 内の固定TZ（案B）にするか。記録側（FEAT-04・FEAT-08）の日付採番と揃える必要がある。
 
@@ -582,10 +583,19 @@ $$;
 
 > ⚠️ 要確認（人間判断）: #12 RULE-001 を Dart 側のみに置き、RPC は `weight_kg` を返すだけとする方針でよいか。
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
-> `30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。後継ADRの起票と段3の改訂が必要。
-> 本機能では `GET /api/dashboard?period=` が RPC `get_dashboard` に置き換わる。
-> 段3 §4.3 の契約表（パス・クエリ・レスポンス形）の改訂が要る。
+> ⚠️ 要確認（人間判断）: #13 過去期間のゲージを「現在の体重が基準」と分かる表現にするか。ADR-0009 により体重履歴は持たないため、表現でしか解けない。案は次の3つ。
+>
+> | 案 | 表現 |
+> |---|---|
+> | i | ゲージ脇に基準体重を併記する（「基準: 現在の体重 ◯kg」） |
+> | ii | 期間が当日以外のとき注記を出す（「過去分も現在の体重で計算しています」） |
+> | iii | ゲージは当日固定とし、過去期間では達成率を出さない（#5 の結論に依存） |
+
+> ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
+> ~~一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。~~
+> ~~`30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。後継ADRの起票と段3の改訂が必要。~~
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
+> ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
+> 本機能では `GET /api/dashboard?period=` が RPC `get_dashboard` に置き換わった。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

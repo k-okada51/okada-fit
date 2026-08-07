@@ -7,7 +7,8 @@ status: draft
 > **書き方**:（記入例は example-suido-fax の対応フォルダ参照）実データは書かず、`{ }` を自プロジェクトの語に置き換える。**契約雛形・IF一覧の正本は `システム基本設計`／`30_データ・IF設計/02_API設計.md`**。**外部ワイヤ（既存API契約）は改変しない**方針を明記し、`EXT-*` でリンクする。
 
 > ⚠️ **Vercel は使わない**（2026-08-07 決定）。クライアントは Flutter、サーバは Supabase Edge Functions。AI は **Edge Function から Google Gemini API を直接呼ぶ**。
-> ADR-0001（Vercel AI Gateway 採用）と ADR-0002（Next.js + Mantine）は**この決定と矛盾する**。後継ADRの起票が必要。
+> **ADR-0010**（Flutter + Supabase）・**ADR-0011**（Gemini API 直接）で確定済み（2026-08-08）。
+> ADR-0001 は `Superseded by ADR-0011`、ADR-0002 は `Superseded by ADR-0010`。
 
 ## 連携先インデックス
 
@@ -74,7 +75,9 @@ Flutter アプリ → Supabase Edge Function → Gemini API
 
 > ⚠️ 要確認（人間判断）: 二重送信の抑止をアプリ側だけに任せてよいか。連打や再読込での重複呼び出しは課金に直結する。
 
-> ⚠️ 要確認（人間判断）: ADR-0001・ADR-0002 の後継ADR起票（Vercel 不使用・Flutter／Supabase 構成の確定）。
+> ~~⚠️ 要確認（人間判断）: ADR-0001・ADR-0002 の後継ADR起票（Vercel 不使用・Flutter／Supabase 構成の確定）。~~（**解決**・2026-08-08）
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票し Accepted にした。
+> ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
 > 関連: 契約スキーマ＝`30_データ・IF設計/02_API設計.md` / ポーリングバッチ＝`../02_バッチ設計.md` / 外部連携の俯瞰＝`../../10_システム基本設計/04_外部連携.md`。
 

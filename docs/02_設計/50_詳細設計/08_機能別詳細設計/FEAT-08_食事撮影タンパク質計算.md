@@ -105,10 +105,13 @@ base64 化で約1.33倍になる。**最大でも約400KB。**
 
 ### ADR・段3との関係
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
-> `../../30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。
-> 後継ADRの起票と段3の改訂が必要。**ADR-0003（写真非保持）は改訂不要**（§10-12）。
+> ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
+> ~~一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。~~
+> ~~`../../30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。~~
+> ~~後継ADRの起票と段3の改訂が必要。~~
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）で確定済み。
+> ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
+> **ADR-0003（写真非保持）は改訂不要**（§10-12）。
 
 > ⚠️ 要確認（人間判断）: 段3との乖離は次の3点。`../../30_データ・IF設計/02_API設計.md` §4.1 の契約表の改訂が要る。
 
@@ -311,11 +314,12 @@ const res = await fetch(
 | 項目 | 内容 |
 |---|---|
 | 呼び出し | `supabase.from('meal_logs').insert({...}).select('id, eaten_date').single()` |
-| 認証 | 要（JWT。RLS で本人行のみ） |
+| 認証 | 要（JWT。RLS で `user_id = auth.uid()` の本人行のみ） |
 | フィールド名 | snake_case＝DB列名と一致 |
+| `meal_logs.user_id` の型 | **uuid**（`auth.uid()` と同じ値・ADR-0005） |
 | `user_id` | **クライアントから送らない** |
-| `user_id` の解決 | 列 DEFAULT `auth.uid()` 相当 `[仮]` |
-| `user_id` の防御 | RLS の `WITH CHECK` で他人の値を拒否する `[仮]` |
+| `user_id` の解決 | 列 DEFAULT `auth.uid()` `[仮]`（DEFAULT を使うか否かが `[仮]`。値と型は確定） |
+| `user_id` の防御 | RLS の `WITH CHECK (user_id = auth.uid())` で他人の値を拒否する `[仮]` |
 | 冪等性 | 非冪等（連投すると2行入る）。冪等キーは当面未使用 |
 
 ```jsonc
@@ -443,7 +447,7 @@ ADR-0001 の実測で、外食の脂質 MAPE は 32.7%。
 
 ```sql
 -- FEAT-08 ⑧ 食事記録の保存。PostgREST が発行する単文＝暗黙トランザクション。
--- 画像・料理名の列は存在しない（ADR-0003）。user_id は列 DEFAULT で解決する [仮]。
+-- 画像・料理名の列は存在しない（ADR-0003）。user_id は uuid で、列 DEFAULT auth.uid() で解決する [仮]。
 INSERT INTO meal_logs (
   calories_kcal, protein_g, sugar_g, fat_g, eaten_date, eaten_time, intake_count
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -455,17 +459,19 @@ RETURNING id, eaten_date;
 | 対象テーブル | `meal_logs`（INSERT のみ）。Edge Function は対象テーブルなし |
 | 使用INDEX | 本 INSERT は INDEX 探索を伴わない |
 | INDEX の更新コスト | `ix_meal_logs_user_date` の更新のみ。同 INDEX は FEAT-09 の当日 SUM が使う |
-| RLS | `user_id = auth.uid()` 相当で本人行のみ |
+| `meal_logs.user_id` の型 | **uuid**。`users.id` が uuid＝`auth.users.id` のため（案A・ADR-0005） |
+| RLS | `user_id = auth.uid()` の**直接比較**で本人行のみ（3区分の「本人のみ」） |
 | RLS の正本 | `../01_DB物理設計.md` §3・`../../30_データ・IF設計/01_データモデル.md` §7 |
-| `user_id` の詐称防止 | クライアントが送っても RLS の `WITH CHECK` で拒否する |
-| `user_id` の解決 | 列 DEFAULT で自動解決する `[仮]` |
+| RLS の3区分 | 横断方針は `../07_実装共通設計パターン.md` §1 |
+| `user_id` の詐称防止 | クライアントが送っても RLS の `WITH CHECK (user_id = auth.uid())` で拒否する |
+| `user_id` の解決 | 列 DEFAULT `auth.uid()` で自動解決する `[仮]` |
 | トランザクション境界 | Edge Function ＝なし（DB非接触） |
 | 同上（保存側） | INSERT 1文の暗黙トランザクション。両者にまたがる境界は無い |
 | 外部I/Oとの関係 | EXT-01 呼び出しはトランザクション外。DB非接触により構造的に保証される |
 
-> ⚠️ 要確認（人間判断）: `user_id`（`bigint`）と Supabase `auth.uid()`（`uuid`）の紐付け方式は未確定。
-> 正本は `../06_DB設計規約.md`。
-> 本書では方式を決めない。列 DEFAULT と RLS の2か所で同じ解決方式を使うことだけを要件とする。
+> ~~⚠️ 要確認（人間判断）: `user_id` と Supabase `auth.uid()` の紐付け方式は未確定。本書では方式を決めない。~~（**解決**・2026-08-08）
+> **案A で確定**（ADR-0005）。`users.id` を uuid にして `auth.users.id` と同値にしたため、`meal_logs.user_id` も uuid になる。
+> 列 DEFAULT も RLS も `auth.uid()` をそのまま使う。変換・対応表は要らない。正本は `../01_DB物理設計.md` §3・`../06_DB設計規約.md`。
 
 ## 6. エラー処理
 
@@ -627,12 +633,14 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 9 | プロンプト文言が未確定 | §3.2 の `MEAL_ANALYZE_PROMPT` は PoC の実測プロンプト（コンビニ・外食チェーン前提）が基線。家庭料理も含む本番用途では文言が合わない。変えると ADR-0001 の実測 MAPE の前提が崩れ再ベンチが要る | 🟡 中 |
 | 10 | 横断方針の正本が未記入 | `../07_実装共通設計パターン.md` はエラー分類・トランザクション・冪等・リトライの各表が未記入。本書の §5・§6 は FEAT-08 固有の判断として先行して書いている。同ファイル確定時に齟齬が出る可能性がある | 🟡 中 |
 | 11 | レート制限の実装基盤が未決 | NFR-SEC-05 の閾値は未定（本書 20回/時・100回/日 `[仮]`）。Edge Function はインスタンス間でメモリを共有せず、プロセス内カウンタでは制限にならない。永続カウンタが要るが物理DBに該当表が無く新設も禁止 | 🟡 中 |
-| 12 | **根拠ADRのうち ADR-0001 が改訂を要する**（ADR-0002 も Flutter へ置換） | **ADR-0003 は改訂不要**（直接送信・端末側リサイズ必須という当初方針と整合・§1）。**ADR-0001 は改訂が要る**（Gateway 前提でフォールバックが失われる・TC-FEAT08-08） | 🔴 高 |
+| 12 | ~~**根拠ADRのうち ADR-0001 が改訂を要する**（ADR-0002 も Flutter へ置換）~~（**解決**） | **ADR-0011 が根拠になった**（Gemini API 直接・フォールバック不在の受容・TC-FEAT08-08）。ADR-0002 は **ADR-0010** で置換済み。**ADR-0003 は改訂不要**（直接送信・端末側リサイズ必須という当初方針と整合・§1） | — |
 | 13 | ボディ上限が未文書化のまま直接POSTを採っている | 公式 Limits に記載が無く実測で判断。実測は中央値 163 KB・最大 303 KB、base64 で約 400 KB＝メモリ 256 MB の 0.2% 未満。上限値は不明のため実装時に1回疎通検証する（TC-FEAT08-18） | 🟡 中 |
 
-> ⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。
-> 直接呼び出しで宣言的フォールバックが失われる点を、許容するか代替を実装するかを決めてください。
-> ADR-0002（Next.js + Mantine 採用）も Flutter への置き換えが必要です。
+> ~~⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。~~（**解決**・2026-08-08）
+> ~~直接呼び出しで宣言的フォールバックが失われる点を、許容するか代替を実装するかを決めてください。~~
+> ~~ADR-0002（Next.js + Mantine 採用）も Flutter への置き換えが必要です。~~
+> **ADR-0011** を起票し、フォールバック不在の受容を明記しました。ADR-0001 は Superseded です。
+> ADR-0002 は **ADR-0010** で置換しました。
 > ADR-0003（写真非保持）は当初方針どおりのため改訂は不要です。
 
 > ⚠️ 要確認（人間判断）: #13 Edge Function のリクエストボディ上限は未文書化です。

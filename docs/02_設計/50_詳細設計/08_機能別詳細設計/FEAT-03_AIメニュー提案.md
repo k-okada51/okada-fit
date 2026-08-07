@@ -9,14 +9,11 @@ status: draft
 
 > ⚠️ **本書はたたき台（2026-08-02 生成）**。岡田さんのレビューで確定する。
 
-> ⚠️ 要確認（人間判断）: **本機能の設計を確定させる前に、後継ADRを起票すること。** FEAT-03 は ADR-0001 が根拠ADRそのものだからである。
-> - 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> - 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
-> - `30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同じ。段3の改訂が要る。
-> - ADR-0001 に依存していたのは、EXT-01 の実体・モデル選定・フォールバック方針・コスト按分タグ。
-> - Gemini API 直接呼び出しへの切替は、ADR-0001 の前提を丸ごと置き換える。
-> - 起票する後継ADRの内容は、Gemini API 直接呼び出し・モデル選定・フォールバック不在の受容。
-> - 後継ADRが無い限り、本書 §3.2・§6・§10 #6 は根拠を持たない。
+> ~~⚠️ 要確認（人間判断）: **本機能の設計を確定させる前に、後継ADRを起票すること。**~~（**解決**・2026-08-08）
+> - **ADR-0011**（Gemini API 直接）を起票し Accepted にした。本機能の根拠ADRはこれになる。
+> - 内容は Gemini API 直接呼び出し・モデル選定・フォールバック不在の受容。
+> - ADR-0001 は `Superseded by ADR-0011`、ADR-0002 は `Superseded by ADR-0010` に遷移済み。
+> - 段3（`30_データ・IF設計/02_API設計.md`）も改訂済み。経緯は §10 #12。
 
 ## 目次
 1. [概要](#1-概要)
@@ -334,19 +331,28 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | 渡すもの | 呼び出し元の `Authorization` ヘッダ（利用者JWT）をそのまま Supabase クライアントに渡す（ADR-0004） |
 | 狙い | RLS を効かせるため |
 | service role を避ける理由 | service role は RLS を素通りする |
-| 重なるとどうなるか | §10 #8 の「JOIN 条件だけが本人性の担保」と重なると、他人のジムの器具が読める |
+| 重なるとどうなるか | RLS を素通りすると、他人の `training_menus` と `machine_menus` まで読める。`training_machines` は共通マスタで誰でも読めるため、絞り込みが一切効かなくなる |
 | 対象テーブル | `training_machines`／`machine_menus`／`training_menus`（いずれも SELECT のみ） |
 | 書き込み | **INSERT/UPDATE/DELETE は行わない** |
 | 使用INDEX | `training_menus` は PK と `user_id`・`body_part` の絞り込み |
 | 使用INDEX | `machine_menus` は `uq_mm_machine_menu`（`machine_id, menu_id`）と `ix_mm_menu`（`menu_id`） |
 | INDEX の正本 | `../01_DB物理設計.md §3` |
-| RLS | `user_id = auth.uid()` 相当で本人行のみ |
-| RLS の弱点 | `training_machines` も `machine_menus` も `user_id` 列を持たない |
-| 本人性の担保 | `machine_menus` を挟んだ `training_menus` への JOIN 条件のみ（§10 #8・#16） |
-| 多対多化の影響 | 経路が1段深くなった |
+| RLS（本人のみ） | `training_menus` は `user_id = auth.uid()`。`users.id` は uuid（ADR-0005） |
+| RLS（共通マスタ） | `training_machines` は所有者列を持たない。`TO authenticated USING (true)` |
+| RLS（親経由） | `machine_menus` は `menu_id` の所有者が本人であることを `EXISTS` で確かめる |
+| 本人性の担保 | **`training_menus` の RLS が担保点。** JOIN 条件だけに頼らない（§10 #8） |
+| 多対多化の影響 | 経路が1段深くなった。`machine_menus` のポリシーも担保点に加わる |
 | トランザクション境界 | なし（参照のみ）。EXT-01 呼び出しは DB 接続を保持したまま行わない |
 | 永続化 | 提案結果は保存しない `[仮]`（§10 #1） |
 | 採用時の委譲先 | FEAT-01（`training_menus` への PostgREST insert）／FEAT-04（RPC `create_training_session`） |
+
+- (1) の `$2` は `auth.uid()`（uuid）。RLS が同じ条件を強制するため、JOIN 条件は二重防御になる。
+
+> ⚠️ 要確認（人間判断）: 共通マスタは認証済みなら誰でも読み書きできる（🟡 中）。
+>
+> - 対象は `training_machines`。他人の器具IDを渡しても器具行そのものは読める。
+> - ただし (1) は `training_menus` を JOIN するため、他人の器具は0行になり ERR-MENU-001 になる。
+> - 単一ユーザー運用（NFR-SCALE-01）では実害が無いと評価した。Phase2 で見直す。
 
 ## 6. エラー処理
 | ERR-ID | HTTP | 発生条件 | 利用者向けメッセージ（意図） | retryable | ログ |
@@ -449,16 +455,17 @@ Flutter ウィジェットで記述する。
 | 5 | タイムアウトと Edge Function 実行時間上限の関係 | NFR-PERF-03 の15秒は UX 目標で、**Edge Function 自体の実行時間上限**は別に存在し未確認`[仮]`。15秒未満なら設計が成立せず確定前に実測が要る。中断してもトークンは消費済みのことがある | 🔴 高 |
 | 6 | 単一プロバイダ依存・フォールバック手段が無い | 直接呼び出しで**モデル自動切替が無くなり**、旧構成のフォールバックは失われた。自前の切替は二重課金・レイテンシ倍増の risk があり採らない。障害＝FEAT-03 全停止のため SCR-03 に手動記録の経路を残す | 🔴 高 |
 | 7 | 構造化出力の失敗が共通エラー契約に無い | `responseSchema` 不適合・JSON 破損に対応する ERR も HTTP も共通契約に無い。再試行しても同じ結果になりやすく既存4種と性質が違う。本書は `ERR-MENU-004` を`[仮]`採用したが追加が要る | 🟡 中 |
-| 8 | `training_machines` に `user_id` が無い | `gym_id` 所有で RLS を直接適用できず、本人性は §5 の JOIN 条件だけが担保する。JOIN を落とすと他人のジムの器具が読める。**service role key で即座に露出する**ため呼び出し元JWTを使う | 🔴 高 |
+| 8 | ~~`training_machines` に `user_id` が無い~~（**解決**） | **2026-08-08 決定（ADR-0005）。共通マスタで確定**（`TO authenticated USING (true)`）。所有者列は足さない。本人性は `training_menus` の RLS（`user_id = auth.uid()`）と `machine_menus` の親経由ポリシーが担保する（§5） | — |
+| 〃 | 〃 | JOIN を落とすと他人の器具が読める点は変わらない。**service role key で即座に露出する**ため呼び出し元JWTを使う（§5） | — |
 | 9 | ~~`training_machines.menu_id` の INDEX 未定義~~（解決） | ~~`menu_id` の INDEX が未定義~~。多対多化で `menu_id` は廃止され `machine_menus` の INDEX 2本に置き換わった（§5）。両方向とも効き、件数規模の論点は FEAT-02 と共通 | 🟢 低 |
 | 10 | 横断方針の正本が未記入 | `../07_実装共通設計パターン.md` はテンプレートのままでエラー分類・リトライ・多重制御の値が空。加えて同書は旧構成前提のまま。本書は暫定的に「非冪等・自動リトライなし・429のみバックオフ」を拠り所にしている | 🟡 中 |
-| 11 | 認証IDと `users.id` の紐付け | RLS の `user_id = auth.uid()` を成立させる `users.id`(bigint) と `auth.uid()`(uuid) の紐付けが未確定（正本は `../06_DB設計規約.md`）。本書は方式を決めない | 🟡 中 |
-| 12 | 上位文書が旧構成のまま | ADR-0001・ADR-0002・段3の API 契約が旧構成前提。**FEAT-03 は ADR-0001 が根拠ADRそのもの**で、後継ADRが無い状態では §3.2・§6・#6 が根拠を持たない。後継ADRの起票が本機能の確定条件 | 🔴 高 |
+| 11 | ~~認証IDと `users.id` の紐付け~~（**解決**） | **案A で確定（ADR-0005）。** `users.id` を uuid にして `auth.users.id` と一致させた。RLS は `user_id = auth.uid()` の直接比較になる（正本は `../01_DB物理設計.md §3`） | — |
+| 12 | ~~上位文書が旧構成のまま~~（**解決**） | **ADR-0011 が根拠になった**（Gemini API 直接・モデル選定・フォールバック不在の受容）。§3.2・§6・#6 はこれを根拠とする。ADR-0001 は Superseded、ADR-0002 は **ADR-0010** で置換。段3の API 契約も改訂済み | — |
 | 13 | Gemini API 仕様の未確認箇所 | `responseSchema` の対応範囲（`enum`・`minItems` 等）、`systemInstruction` のフィールド名、`thinkingConfig` の指定が未確認で全て`[仮]`。差分は §3.2 に反映する | 🟡 中 |
 | 14 | 部位整合の判定条件が変わった | 多対多化で RULE-004 の判定が「**指定部位の種目を1つ以上持つ**」に変わり（§5）、他部位の併せ持ちは違反でない。原文は1対1とも読め追認が要る。対応種目0件の器具の登録可否も未定（許すと ERR-MENU-001） | 🟡 中 |
 | 15 | 絞り込みの `DISTINCT` と件数照合 | 同一部位の種目を複数持つ器具は複数行出るため、照合は行数でなく `DISTINCT machine_id` 件数で行う。落とすと L3 の器具数も過大になる。ERR-MENU-001 と ERR-MENU-002 の切り分けには2本要る | 🟡 中 |
-| 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` を持たず、本人性は `training_menus` への JOIN 条件だけが担保する | 🟡 中 |
-| 〃 | 〃 | #8 の弱点が1段深くなった。JOIN を1つ落とすと他人の器具が混ざる。RLS ポリシーは未定 | 〃 |
+| 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` を持たず、本人性は親（`training_menus`）を辿ってしか担保できない | 🟡 中 |
+| 〃 | 〃 | #8 の弱点が1段深くなった。JOIN を1つ落とすと他人の器具が混ざる。RLS は親経由（`menu_id` の所有者が本人）で確定した（ADR-0005） | 〃 |
 
 > ⚠️ 要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング（保存しない／採用時のみ `training_menus` へ／別テーブルを設ける）。別テーブル案は新規テーブル追加になるため本書では採らない。
 > ⚠️ 要確認（人間判断）: #2 AI に渡す入力の粒度と、FEAT-03 が提供する価値の定義（新種目の発見か、既知種目の `how_to` 生成か）。
@@ -467,8 +474,11 @@ Flutter ウィジェットで記述する。
 > ⚠️ 要確認（人間判断）: #6 フォールバック不在を受容するか、Edge Function 内に自前のモデル切替を実装するか。
 > - 受容する場合は NFR-AVAIL-05 の縮退範囲に「FEAT-03 全停止」を明記する。
 > ⚠️ 要確認（人間判断）: #7 構造化出力の失敗（スキーマ不適合・JSON破損）に割り当てる ERR-ID と HTTP ステータスの共通契約への追加。FEAT-08 も同じ分岐を持つため、機能別ではなく共通側で決めるべき。
-> ⚠️ 要確認（人間判断）: #8 `training_machines` の本人性担保方式（JOIN 条件のみで足りるか、RLS ポリシーをどう書くか）。
-> ⚠️ 要確認（人間判断）: #12 後継ADRの起票（Gemini API 直接呼び出し・モデル選定・フォールバック不在の受容）。本機能の設計確定より前に必要。
+> ~~要確認（人間判断）: #8 `training_machines` の本人性担保方式（JOIN 条件のみで足りるか、RLS ポリシーをどう書くか）。~~（**解決**・ADR-0005）
+> - `training_machines` は共通マスタ、`machine_menus` は親経由、`training_menus` は `user_id = auth.uid()`（§5）。
+> - 残る要確認は「共通マスタを誰でも書き換えられる」点のみ（§5・Phase2）。
+> ~~⚠️ 要確認（人間判断）: #12 後継ADRの起票（Gemini API 直接呼び出し・モデル選定・フォールバック不在の受容）。~~（**解決**・2026-08-08）
+> - **ADR-0011** を起票し Accepted にした。ADR-0001 は Superseded。段3も改訂済み。
 > ⚠️ 要確認（人間判断）: #14 RULE-004 の判定条件を「器具が指定部位の種目を1つ以上持つ」に確定してよいか。あわせて対応種目0件の器具を登録できるかを FEAT-01 と揃えて決める必要がある。
 > ⚠️ 要確認（人間判断）: #15 ERR-MENU-001 と ERR-MENU-002 を切り分けるためにクエリを2本に分けるか、1本のまま両者を統合した1つのエラーにするか。
 

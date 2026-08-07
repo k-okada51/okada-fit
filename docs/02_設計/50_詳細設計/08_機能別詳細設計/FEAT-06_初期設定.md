@@ -65,13 +65,13 @@ sequenceDiagram
   participant R as ProfileRepository
   participant P as Supabase PostgREST(users + RLS)
 
-  Note over F,P: users 行はサインアップ時にトリガで作成済み（案a・§4.1）
+  Note over F,P: users 行はサインアップ時にトリガで作成済み（案a・確定・§4.1）
 
   U->>F: SCR-05 設定・プロフィールを開く
   F->>R: fetchProfile()
   R->>P: from('users').select(...).single()
   Note over R,P: JWT は supabase_flutter が自動付与（ADR-0004）
-  Note over R,P: 本人行の特定は auth.uid() から users.id への解決に依存（§10 論点1）
+  Note over R,P: 本人行の特定は id = auth.uid() の直接比較（案A・ADR-0005）
   alt 本人行あり
     P-->>R: name / target_training_count / weight_kg
     R-->>F: Profile
@@ -148,6 +148,7 @@ Future<Profile> fetchProfile() async {
 
 | フィールド | Dart 型 | 内容 |
 |---|---|---|
+| `id` | `String` | `users.id`（**uuid**）。`auth.users.id` と同値（案A・ADR-0005）。自動採番しない |
 | `name` | `String` | トリム後 1〜50 文字 |
 | `target_training_count` | `int?` | 0〜31。未設定でも既定 12 が入った状態で返る |
 | `weight_kg` | `double?` | 20.0〜300.0・小数第1位まで。`null`＝未設定 |
@@ -157,6 +158,7 @@ Future<Profile> fetchProfile() async {
 | 項目 | 内容 |
 |---|---|
 | 呼び出し | `supabase.from('users').update(patch).eq('id', userId).select(...).single()` |
+| `userId` | `supabase.auth.currentUser!.id`（uuid 文字列）。`users.id` と同値のため変換しない（案A・ADR-0005） |
 | 認証 | 必須（ADR-0004）。`.eq('id', ...)` は RLS の保険であって代替ではない |
 | `patch` | 3列すべて任意（部分更新）。最低1つ必須。生成は `buildProfileUpdate`（§4.3） |
 | 返り | 更新後の行（§3.1 と同一スキーマ） |
@@ -231,36 +233,56 @@ Dart 側でキャメルケースに変換しない。
 
 | 案 | 置き場所 | 判定 | 長所 | 短所 |
 |---|---|---|---|---|
-| **a** `[仮]` | `auth.users` への AFTER INSERT トリガ（`supabase/migrations/*.sql`） | **推奨** | サインアップ経路（メールリンク・OAuth）に依らず必ず走る | 論点1が決着するまで書けない |
-| **a** `[仮]` | 〃 | 〃 | 作成漏れが構造的に起きない。クライアント実装に依存しない | 〃 |
-| b | Flutter の起動時に `supabase.from('users').upsert(...)` を1回呼ぶ | 次善 | アプリだけで完結する | `upsert` の競合キーが要る。論点1に同じくブロックされる |
-| b | 〃 | 〃 | 〃 | 起動のたびに1往復増える |
+| **a** | `auth.users` への AFTER INSERT トリガ（`supabase/migrations/*.sql`） | **採用（確定）** | サインアップ経路（メールリンク・OAuth）に依らず必ず走る | サインアップのトランザクションが失敗すると行も作られない |
+| **a** | 〃 | 〃 | 作成漏れが構造的に起きない。クライアント実装に依存しない | DBの外から挙動が見えにくい |
+| b | Flutter の起動時に `supabase.from('users').upsert(...)` を1回呼ぶ | 不採用 | アプリだけで完結する | 起動のたびに1往復増える |
+| b | 〃 | 〃 | 〃 | クライアント実装に依存し、作成漏れが起こりうる |
 | c | 旧案の共通関数 `ensureUserRow()` を各API入口で呼ぶ | **不採用** | — | Route Handler 前提の案。PostgREST 直接では呼ばれる場所が無い |
 
-- 案a を採ると、読み取り時の0行は「初回」ではなく**異常**になる。ERR-PROFILE-004 として扱う（§6）。
-- 案a はいまは**書けない**。`auth.users.id`（uuid）を `public.users` のどの列に書くかが未確定（§10 論点1）。
-- 論点1の決着が案aの実装可否に直結する。
-- 決着までの暫定として案b を置く選択肢は残す。
-- ただし案b も `upsert` の競合キーに同じ列が要る。**論点1を回避できるわけではない。**
+**案a を採用する**（案A・ADR-0005 で `users.id` が `auth.users.id` と同値の uuid に決まり、書けるようになった）。
+
+```sql
+-- supabase/migrations/*.sql（案a・確定）
+create function public.handle_new_user() returns trigger
+language plpgsql security definer as $$
+begin
+  insert into public.users (id, name, target_training_count, weight_kg)
+  values (
+    new.id,                                    -- auth.users.id をそのまま使う（自動採番しない）
+    coalesce(
+      nullif(trim(new.raw_user_meta_data ->> 'name'), ''),       -- [仮] キー名は実装時に確認
+      nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),  -- [仮] OAuth の表示名
+      nullif(split_part(new.email, '@', 1), ''),                 -- [仮] なければメールのローカル部
+      'ユーザー'                                                  -- [仮] 最終フォールバック
+    ),
+    12,    -- RULE-007（月12回＝週3想定）
+    null   -- 体重は推測してはならない値のため既定を置かない
+  );
+  return new;
+end; $$;
+
+create trigger on_auth_user_created
+after insert on auth.users
+for each row execute function public.handle_new_user();
+```
+
+| 項目 | 内容 |
+|---|---|
+| 実行権限 | `security definer`。`auth.users` の行を読んで `public.users` へ書くため |
+| `users.id` | `new.id` を代入する。`auth.users(id)` への FK（`ON DELETE CASCADE`）で親子が揃う |
+| `[仮]` の範囲 | `raw_user_meta_data` のキー名と `name` の既定値のみ。方式そのものは確定 |
+| 読み取り0行の意味 | 「初回」ではなく**異常**。ERR-PROFILE-004 として扱う（§6） |
 
 ### 4.2 既定値
 
-既定値の正本は**トリガ側（SQL）1か所**に置く。Dart 側の定数はテストと表示の期待値としてのみ持つ。
+既定値の正本は**トリガ側（SQL）1か所**に置く（DDL は §4.1）。Dart 側の定数はテストと表示の期待値としてのみ持つ。
 
-```sql
--- supabase/migrations/*.sql（§4.1 案a `[仮]`）
--- users.id は GENERATED ALWAYS のため INSERT で指定しない
-insert into public.users (name, target_training_count, weight_kg)
-values (
-  coalesce(
-    nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),  -- OAuth の表示名
-    nullif(split_part(new.email, '@', 1), ''),                 -- なければメールのローカル部
-    'ユーザー'                                                  -- 最終フォールバック
-  ),
-  12,    -- RULE-007（月12回＝週3想定）
-  null   -- 体重は推測してはならない値のため既定を置かない
-);
-```
+| 列 | 既定値 | 根拠 |
+|---|---|---|
+| `id` | `new.id`（`auth.users.id` の uuid） | 案A・ADR-0005。列 DEFAULT も自動採番も置かない |
+| `name` | `raw_user_meta_data` → メールのローカル部 → `'ユーザー'` の順で最初に非空の値 `[仮]` | `not null` を満たすため |
+| `target_training_count` | `12` | RULE-007（月12回＝週3想定） |
+| `weight_kg` | `null` | 体重は推測してはならない値のため既定を置かない |
 
 ```dart
 // app/lib/domain/profile.dart
@@ -306,7 +328,7 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 |---|---|---|
 | 1 | `from('users').select('id, name, target_training_count, weight_kg').single()` | `SELECT id, name, target_training_count, weight_kg FROM users` ＋ RLS 述語 |
 | 2 | `from('users').update(patch).eq('id', $1).select(...).single()` | `UPDATE users SET <patch の列> WHERE id = $1 RETURNING ...` ＋ RLS 述語 |
-| 3 | `auth.users` の AFTER INSERT トリガ（§4.1 案a `[仮]`） | `INSERT INTO users (name, target_training_count, weight_kg) VALUES (...)` |
+| 3 | `auth.users` の AFTER INSERT トリガ（§4.1 案a・確定） | `INSERT INTO users (id, name, target_training_count, weight_kg) VALUES (new.id, ...)` |
 
 - 1 と 2 に `WHERE` 相当を書かなくても RLS が本人行に絞る。
 - `.eq('id', ...)` は二重防御であり、**RLS の代替ではない**。
@@ -318,8 +340,8 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | 対象テーブル | `users`（DM-01）のみ。他テーブルへの読み書きは行わない |
 | 使用INDEX | PK `users(id)` の一意インデックスのみ |
 | 追加INDEX | 不要。行数が極小（`../01_DB物理設計.md §3` に FEAT-06 用の追加は無い） |
-| RLS | 本人行のみ。述語は `id` 側で書く（`users` は `user_id` 列を持たない） |
-| RLS の前提 | 自分自身がユーザー行である。書き方は §10 論点1 に依存 |
+| RLS | 本人行のみ。述語は `id = auth.uid()`（`users` は `user_id` 列を持たない） |
+| RLS の前提 | `users.id` が `auth.users.id` と同値の uuid であること（案A・ADR-0005）。中間列も型変換も要らない |
 | トランザクション境界 | 1文＝1トランザクション（PostgreSQL の暗黙トランザクション） |
 | 境界の制約 | PostgREST 経由のため複数文をまたぐ境界は張れない |
 | 更新0行の扱い | `.single()` が `PostgrestException` を投げる → ERR-PROFILE-006 |
@@ -388,7 +410,7 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | 2 | `app/lib/features/settings/settings_form.dart` | `Form` ＋ 3つの `TextFormField`（§3.3）。`validator` は #4 の純関数を呼ぶだけ | `class SettingsForm extends StatelessWidget` |
 | 3 | `app/lib/data/profile_repository.dart` | PostgREST アクセス（§3.1・§3.2）と `PostgrestException` → ERR-ID の写像（§6） | `Future<Profile> fetchProfile()` ／ `Future<Profile> updateProfile(ProfileUpdate input)` |
 | 4 | `app/lib/domain/profile.dart` | モデル・検証・`patch` 生成。純関数のみで単体テスト対象（NFR-QUAL-01） | 下表 |
-| 5 | `supabase/migrations/*.sql` | `auth.users` の AFTER INSERT トリガ（§4.1 案a `[仮]`）と `users` の RLS ポリシー。論点1の決着後に着手 | `create function public.handle_new_user() returns trigger` |
+| 5 | `supabase/migrations/*.sql` | `auth.users` の AFTER INSERT トリガ（§4.1 案a・確定）と `users` の RLS ポリシー（`id = auth.uid()`） | `create function public.handle_new_user() returns trigger` |
 
 `profile.dart`（#4）が公開するもの。
 
@@ -418,7 +440,7 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | TC-FEAT06-11 | 空 `patch` ／ 未知キー入り `patch` | ERR-PROFILE-005 ／ ERR-VALIDATION-001（黙って無視しない） |
 | TC-FEAT06-12 | 同一 `patch` で `update` を2回呼ぶ | 2回とも成功・同一結果（冪等） |
 | TC-FEAT06-13 | `select` / `update` の応答時間 | ≤1秒（NFR-PERF-02） |
-| TC-FEAT06-14 | 他ユーザーの行が読めない／書けない | RLS により0行（ADR-0004・論点1の方式確定後に有効化） |
+| TC-FEAT06-14 | 他ユーザーの行が読めない／書けない | RLS により0行（ADR-0004・ADR-0005 の `id = auth.uid()`） |
 | TC-FEAT06-15 | `validator` を通さず範囲外の値を `update` に渡す | DB CHECK に到達するのは `weight_kg>0` と `count≥0` のみ。300超は**保存されてしまう**ことを確認する（§10 論点8の再現テスト） |
 
 受入基準（G/W/T）の候補:
@@ -434,8 +456,8 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | 認証主体と `users` 行の紐付けが未確定 | `users.id` は bigint、`auth.uid()` は uuid。結ぶ列も一意制約も無い（`../01_DB物理設計.md §1.1`）。RLS述語（§5）・`.eq()`（§3.2）・トリガ（§4.1）が同時に書けない | 🔴 高 |
-| 2 | 体重が現在値1点しか無い | `users.weight_kg` は履歴を持たず、FEAT-05 は過去期間も「現在の体重」で目標量を計算する。体重を変えると過去の達成率が遡って書き換わる。履歴テーブル（測定日＋体重）の要否判断が要る | 🔴 高 |
+| 1 | ~~認証主体と `users` 行の紐付けが未確定~~（**解決**） | **案A確定**（ADR-0005）。`users.id` を uuid にし `auth.users(id)` を参照する（`ON DELETE CASCADE`）。RLS述語（§5）は `id = auth.uid()`、`.eq()`（§3.2）は `auth.currentUser.id`、トリガ（§4.1）は `new.id` で書ける | — |
+| 2 | ~~体重が現在値1点しか無い~~（**解決**） | **受容で確定**（ADR-0009）。履歴テーブル（測定日＋体重）は持たない。過去日も現在の体重で目標量を計算する。体重を変えると過去の達成率が遡って変わることは仕様として許容し、**UI表現の課題は FEAT-05 §10-13 に残す** | — |
 | 3 | `weight_kg` が NULL のまま下流が呼ばれる | 体重未設定でも FEAT-07・FEAT-09 は呼べてしまう。0扱い・エラー・未設定誘導のどれにするかは FEAT-07 が正本。FEAT-06 側も §7 の `MaterialBanner` で誘導する前提のため整合が要る | 🟡 中 |
 | 4 | `target_training_count` の利用先が設計上どこにも無い | RULE-007 の既定＝月12回を保存するが、FEAT-05 の応答は目標回数も達成率も返さない。保存するだけで誰も読まない設定値（`../../30_データ・IF設計/02_API設計.md §4.3`） | 🔴 高 |
 | 5 | 表示名の二重管理 | `users.name` は `not null`。Auth 側にも表示名（`raw_user_meta_data`）とメールがある。どちらが正か決めないと片方だけ更新されて食い違う（§4.1 案a は初回のみ写す） | 🟡 中 |
@@ -443,18 +465,21 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | 7 | 上限値に業務的根拠が無い | `weight_kg` ≤300.0・`name` ≤50文字は入力ミス検知のための `[仮]` 値（§3.3）。回数 ≤31 も「1日1回・月最大31日」の仮定に依存し、1日2回の運用では不足する | 🟢 低 |
 | 8 | アプリ側の検証が1段しか無い | DBの CHECK は `weight_kg > 0` と `回数 ≥ 0` だけ。§3.3 の範囲・桁・文字数は Flutter 外では守られず NFR-SEC-01 と矛盾（案は (a) CHECK 強化・(b) RPC 化・(c) 受容） | 🔴 高 |
 
-- 論点1: 旧構成では Route Handler が本人行を解決できた。本機能が全機能中で最初にこの穴に当たる。
-- 論点2: 履歴テーブルは本書では追加しない（指摘にとどめる）。
+- 論点1: 旧構成では Route Handler が本人行を解決できた。本機能が全機能中で最初にこの穴に当たり、案A（ADR-0005）で塞がった。
+- 論点2: 履歴テーブルは追加しない（ADR-0009）。残るのは表示上の誤解を防ぐUI表現で、担当は FEAT-05。
 - 論点8: 案(a)(b)(c) のいずれも採らず、**本書ではDB設計を変えず指摘にとどめる**。
 
 ### 10.5 要確認（人間判断）
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
+> ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
 >
-> - ADR-0001（Vercel AI Gateway 採用）は Vercel 前提のまま
-> - ADR-0002（Next.js + Mantine 採用）も Vercel 前提のまま
-> - `30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同様
-> - 後継ADRの起票と段3の改訂が必要
+> - ~~ADR-0001（Vercel AI Gateway 採用）は Vercel 前提のまま~~
+> - ~~ADR-0002（Next.js + Mantine 採用）も Vercel 前提のまま~~
+> - ~~`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同様~~
+> - ~~後継ADRの起票と段3の改訂が必要~~
+>
+> **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
+> ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
 > ⚠️ 要確認（人間判断）: 段3 との具体的な乖離。
 >
@@ -465,17 +490,20 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 > - HTTP ステータス（200/400/401/404/500）前提の記述も読み替えが要る
 > - 読み替え先は `PostgrestException` ベース
 
-> ⚠️ 要確認（人間判断）: 論点1（`users.id` と `auth.uid()` の紐付け方式）は本機能では決めない。
+> 論点1 の決着（2026-08-08・ADR-0005）: **案A**（`users.id` を uuid にして `auth.users.id` と同値にする）。
 >
-> - 方式の正本は `../06_DB設計規約.md §4.2`
-> - 確定するまで §5 の RLS 述語は書けない
-> - 確定するまで `update` の絞り込みも書けない
-> - 確定するまで §4.1 案a のトリガも書けない
-> - **案a を採るか案b を採るかも、論点1の決着なしには判断できない。**
+> - 方式の正本は `../06_DB設計規約.md §4.2`・`../01_DB物理設計.md`
+> - §5 の RLS 述語は `id = auth.uid()`
+> - `update` の絞り込みは `.eq('id', supabase.auth.currentUser!.id)`
+> - §4.1 は**案a（トリガ）で確定**。`[仮]` は `raw_user_meta_data` のキー名と `name` の既定値だけに縮小した
 
 > ⚠️ 要確認（人間判断）: 論点8（検証層が1段になる件）について、CHECK 制約を強めるか・RPC 化するか・受容するかを決めること。受容する場合は NFR-SEC-01 の適用範囲を明示的に狭める必要がある。
 
-> ⚠️ 要確認（人間判断）: 論点2（体重の履歴保持）について、過去期間のダッシュボードを「当時の体重」で計算する必要があるか。必要なら体重履歴テーブルの新設が要るが、本書では `users` に列を追加せず指摘にとどめる。
+> 論点2 の決着（2026-08-08・ADR-0009）: 体重は**現在値1点のみ**を保持する。
+>
+> - 体重履歴テーブルは新設しない。`users` にも列を追加しない
+> - 過去期間のダッシュボードは「当時の体重」ではなく現在の体重で計算する
+> - 残る課題は表示だけ。誤解を与えないUI表現は FEAT-05 §10-13 が担当する
 
 > ⚠️ 要確認（人間判断）: 論点4（`target_training_count` の利用先）を判断すること。
 >

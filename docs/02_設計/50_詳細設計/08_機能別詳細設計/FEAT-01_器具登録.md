@@ -158,7 +158,7 @@ sequenceDiagram
 | 同上・中間失敗時 | 種目だけが残る（§10 #1） |
 | AI（EXT-01） | 一切呼ばない。NFR-AVAIL-05 の縮退対象外。AI不達時も完全に動作する |
 | 入力の強制点 | DB の RLS・CHECK・FK と RPC 関数の中のみ |
-| Flutter 側の検証 | 利用者体験のための先出し。防御ではない（§3.5・§10 #2） |
+| Flutter 側の検証 | 利用者体験のための先出し。防御ではない（§3.5・§5.5） |
 
 ## 3. 入出力仕様
 
@@ -200,7 +200,7 @@ sequenceDiagram
 | C-05 | 一覧 | `from('training_menus').select('id,name,body_part,how_to,created_at')` | 種目の配列 | — |
 | C-06 | 1件登録 | `from('training_menus').insert(値).select().single()` | 種目1件 | 008〜010/012 |
 | C-07 | 改名・部位変更 | `from('training_menus').update(値).eq('id',id).select()` | 更新行（0件なら不在） | 008〜012 |
-| C-08 | 削除 | `from('training_menus').delete().eq('id',id).select('id')` | 削除行（0件なら不在） | 011/013 |
+| C-08 | 削除（履歴が無い種目のみ） | `from('training_menus').delete().eq('id',id).select('id')` | 削除行（0件なら不在） | 011/013 |
 
 #### ジム（C-09・C-10）
 
@@ -292,7 +292,7 @@ final updatedId = await supabase.rpc('update_machine', params: {
 });   // null → ERR-MACHINE-006
 
 final deletedId = await supabase.rpc('delete_machine', params: {'p_machine_id': machineId});
-// null → ERR-MACHINE-006。関数内で machine_menus の子行も削除する
+// null → ERR-MACHINE-006。machine_menus の子行は FK の ON DELETE CASCADE で消える
 ```
 
 **重要な挙動差**: 対象行が無い場合、PostgREST も RPC も**例外を投げない**。
@@ -318,11 +318,13 @@ final row = await supabase.from('training_menus')
 | `name` | `String` | 必須 | trim 後1〜100文字 |
 | `body_part` | `String` | 必須 | 胸/背中/脚/肩/腕。`../01_DB物理設計.md §4` の CHECK と同値 |
 | `how_to` | `String?` | 任意 | 0〜1000文字。null 許容 |
-| `user_id` | — | — | **アプリから送らない**。RLS の `with check` と DB 既定値で本人を強制する `[仮]` |
+| `user_id` | — | — | **アプリから送らない**。uuid（`auth.uid()` と同値）。RLS の `WITH CHECK (user_id = auth.uid())` で本人を強制する。既定値の指定は `[仮]` |
 
 - `user_id` をクライアントが指定できると、他人の行を作れてしまう。
-- したがって列は送らず DB 側で決める（§10 #2）。
-- C-07 は全置換。C-08 は参照中なら失敗する（§6.1・ERR-MACHINE-013）。
+- したがって列は送らず DB 側で決める（§5.5）。
+- C-07 は全置換。
+- **C-08 は履歴がある種目では失敗する**（`23503`・§6.1・ERR-MACHINE-013）。
+- 器具との紐づけ（`machine_menus`）は CASCADE で消えるため、削除を止めない。
 
 ### 3.4 ジム（`gyms`）
 
@@ -357,7 +359,7 @@ Flutter 側は体験のため、DB 側は防御のためである。
 | `how_to` | `validator`（0〜1000文字） | なし | ERR-MACHINE-010 |
 | `menu_id`（種目の更新・削除） | — | RLS で不可視なら 0件 | ERR-MACHINE-011 |
 | 種目の重複 `[仮]` | 送信前 SELECT（本人の種目内・正規化名） | **現状 UNIQUE 無し**（§10 #4） | ERR-MACHINE-012 |
-| 種目の削除可否 | 送信前 SELECT（参照件数の提示用） | FK 違反（`23503`・`ON DELETE NO ACTION`） | ERR-MACHINE-013 |
+| 種目の削除可否 | 送信前 SELECT（`training_session_details` の参照件数） | FK 違反（`23503`）。`training_session_details.menu_id` が `ON DELETE NO ACTION` | ERR-MACHINE-013 |
 | `gyms.name` | `validator`（必須・trim・NFKC 後1〜100文字） | なし | ERR-MACHINE-014 |
 | ジムの重複 `[仮]` | 送信前 SELECT（正規化名） | **現状 UNIQUE 無し**（§10 #4） | ERR-MACHINE-015 |
 | 認証 | セッション有無で画面を出し分け | JWT 検証（`PGRST301`／401） | ERR-AUTH-001 |
@@ -475,12 +477,17 @@ await supabase.from('training_menus')
 await supabase.rpc('create_machine',
     params: {'p_gym_id': g, 'p_name': n, 'p_menu_ids': ids});
 
-// C-08 種目の削除可否の事前確認（利用者への参照件数提示用。強制は DB の FK）
-await supabase.from('machine_menus')
+// C-08 種目の削除可否の事前確認（利用者への件数提示用。強制は DB の FK）
+await supabase.from('training_session_details')     // 1件でもあれば削除できない（NO ACTION）
     .select('id').eq('menu_id', menuId).count(CountOption.exact);
-await supabase.from('training_session_details')
+await supabase.from('machine_menus')                // 削除は止めない。消える紐づけの台数を出すため
     .select('id').eq('menu_id', menuId).count(CountOption.exact);
 ```
+
+| 参照元 | `ON DELETE` | 種目の削除への影響 |
+|---|---|---|
+| `training_session_details` | NO ACTION | **削除できない**。`23503` → ERR-MACHINE-013 |
+| `machine_menus` | CASCADE | 紐づけだけが消える。削除は通る |
 
 ### 5.2 RPC 3本の本体（SQL）
 
@@ -496,8 +503,7 @@ DELETE FROM machine_menus WHERE machine_id = p_machine_id;
 INSERT INTO machine_menus (machine_id, menu_id)
 SELECT p_machine_id, x FROM unnest(p_menu_ids) AS x;
 
--- C-04 delete_machine の本体（子から先に消す）
-DELETE FROM machine_menus     WHERE machine_id = p_machine_id;
+-- C-04 delete_machine の本体（machine_menus の子行は FK の ON DELETE CASCADE で消える）
 DELETE FROM training_machines WHERE id = p_machine_id RETURNING id;
 ```
 
@@ -545,21 +551,35 @@ INDEX の正本は `../01_DB物理設計.md §3`。
 
 ### 5.5 RLS
 
-| テーブル | ポリシーの張り方 |
-|---|---|
-| `training_menus` | `user_id` を持つ。直接ポリシーを張れる |
-| `training_machines` | 所有者列を持たない。中間テーブル経由の間接ポリシーになる |
-| `machine_menus` | 所有者列を持たない（§10 #14） |
-| `gyms` | 本人限定に絞る手段が無い。全ユーザ共有マスタになる（§10 #2） |
+方針は ADR-0005 で確定した。正本は `../01_DB物理設計.md §3`。
 
-器具のポリシーは次の形になり、旧構成より1段深い。
+| 区分 | 本機能で触るテーブル | ポリシー |
+|---|---|---|
+| 本人のみ | `training_menus` | `user_id = auth.uid()` |
+| 共通マスタ | `gyms` / `training_machines` | `TO authenticated USING (true)` |
+| 親経由 | `machine_menus` | `menu_id` の所有者が本人（`EXISTS`） |
+
+- `users.id` は uuid で `auth.users.id` と一致する。`auth.uid()` と直接比較できる（案A）。
+- したがって `training_menus.user_id` も uuid になる。
+- 器具・ジムは所有者列を持たない。**共通マスタとして全員で共有する**（§10 #2）。
+- 中間テーブル経由の間接ポリシーは器具には張らない。
+
+`machine_menus` のポリシーだけが1段深い。
 
 ```sql
-EXISTS (SELECT 1 FROM machine_menus mm
-          JOIN training_menus m ON m.id = mm.menu_id
-         WHERE mm.machine_id = training_machines.id
-           AND m.user_id = <本人のusers.id>)
+EXISTS (SELECT 1 FROM training_menus m
+         WHERE m.id = machine_menus.menu_id
+           AND m.user_id = auth.uid())
 ```
+
+- `FOR SELECT/INSERT/UPDATE/DELETE` の分割と `WITH CHECK` の書き分けは `[仮]`。
+- 全テーブルで `ENABLE ROW LEVEL SECURITY` を入れる。
+
+> ⚠️ 要確認（人間判断）: 共通マスタは認証済みなら誰でも読み書きできる（🟡 中）。
+>
+> - 対象は `gyms` と `training_machines`。誤って他人の器具名を書き換えられる。
+> - 単一ユーザー運用（NFR-SCALE-01）では実害が無いと評価した。
+> - Phase2 でマルチユーザーにするなら、所有者列か更新権限の見直しが要る。
 
 ### 5.6 並び順・トランザクション境界・冪等性
 
@@ -613,11 +633,11 @@ EXISTS (SELECT 1 FROM machine_menus mm
 | B | 集合演算を SQL 側に書くことになる |
 | B | 保つ価値のある情報が無いため採らない |
 
-> ⚠️ 要確認（人間判断）: RLSポリシー内の「本人」の表現は未確定の既知論点である。
+> ~~要確認（人間判断）: RLSポリシー内の「本人」の表現は未確定の既知論点である。~~（**解決**）
 >
-> - 論点は `auth.uid()`(uuid) と `users.id`(bigint) の写像。
-> - 正本は `../06_DB設計規約.md`。
-> - 本書では方式を決めず参照にとどめる。
+> - ~~論点は `auth.uid()` と `users.id` の型が揃っていないことだった。~~
+> - **案A で確定（ADR-0005）。** `users.id` を uuid にして `auth.users.id` と一致させた。
+> - 「本人」は `auth.uid()` との直接比較で書ける（§5.5）。正本は `../01_DB物理設計.md §3`。
 
 ## 6. エラー処理
 
@@ -630,7 +650,7 @@ EXISTS (SELECT 1 FROM machine_menus mm
 |---|---|---|---|
 | FK違反 | `23503` | 制約名 `training_machines_gym_id_fkey` `[仮]` | ERR-MACHINE-004 |
 | FK違反 | `23503` | 制約名 `machine_menus_menu_id_fkey` `[仮]` | ERR-MACHINE-005 |
-| FK違反 | `23503` | 削除時。参照元が `machine_menus` / `training_session_details` | ERR-MACHINE-013 |
+| FK違反 | `23503` | 種目の削除時。参照元は `training_session_details`（`NO ACTION`） | ERR-MACHINE-013 |
 | RLS違反 | `42501` | INSERT/UPDATE が `with check` を満たさない | ERR-MACHINE-005（他人所有の種目を指した） |
 | CHECK違反 | `23514` | 制約名に `body_part` を含む `[仮]` | ERR-MACHINE-009 |
 | 一意制約違反 | `23505` | 制約名 `uq_mm_machine_menu` | ERR-MACHINE-016（`p_menu_ids` に重複がある） |
@@ -648,6 +668,7 @@ EXISTS (SELECT 1 FROM machine_menus mm
 | 事項 | 内容 |
 |---|---|
 | `23503` は code だけでは区別できない | `gym_id`（`training_machines`）か `menu_id`（`machine_menus`）かは制約名で判別する |
+| 種目の削除で `23503` が出る先 | `training_session_details_menu_id_fkey` のみ `[仮]`。`machine_menus` は CASCADE で発火しない |
 | 制約名は DB の実体に依存する | だから `[仮]`。マイグレーションで明示命名するのが確実 |
 | `23505` は `machine_menus` でのみ発火する | `uq_mm_machine_menu` が唯一の一意制約 |
 | UNIQUE が無いテーブル | `gyms` `training_menus` `training_machines`（`../01_DB物理設計.md §3`） |
@@ -674,9 +695,9 @@ EXISTS (SELECT 1 FROM machine_menus mm
 | ERR-MACHINE-008 | Flutter | 種目名が空・長さ超過 | 種目名の入力し直しを促す | false | warn |
 | ERR-MACHINE-009 | Flutter ＋ DB（`23514`） | `body_part` が RULE-003 の5値以外 | 部位の選択し直しを促す | false | warn（enum外値を記録） |
 | ERR-MACHINE-010 | Flutter | `how_to` が長さ超過 | やり方メモの短縮を促す | false | warn |
-| ERR-MACHINE-011 | Flutter（空配列） | 更新・削除対象の種目が無い（RLS不可視を含む） | 対象が見つからない旨 | false | warn |
+| ERR-MACHINE-011 | Flutter（空配列） | 更新・削除対象の種目が無い（RLS で不可視な他人の種目を含む） | 対象が見つからない旨 | false | warn |
 | ERR-MACHINE-012 | Flutter（事前SELECT） `[仮]` | 本人の種目に同名が既存 | 既に登録済みである旨 | false | info |
-| ERR-MACHINE-013 | DB（`23503`） | 削除対象の種目が器具またはトレーニング明細から参照中 | 使用中のため削除できない旨と参照件数の提示 | false | warn（参照元と件数を記録） |
+| ERR-MACHINE-013 | DB（`23503`） | 削除対象の種目がトレーニング明細（`training_session_details`）から参照中。FK 違反を検知して伝える | 履歴があるため削除できない旨と参照件数の提示 | false | warn（参照元と件数を記録） |
 | ERR-MACHINE-014 | Flutter | ジム名が空・長さ超過 | ジム名の入力し直しを促す | false | warn |
 | ERR-MACHINE-015 | Flutter（事前SELECT） `[仮]` | 同名のジムが既存 | 既に登録済みである旨 | false | info |
 | ERR-MACHINE-016 | Flutter ＋ DB（`23505`） | `menu_ids` に同じ種目が2回以上含まれる | 同じ種目は1回だけ選べる旨 | false | warn（重複件数のみ記録） |
@@ -719,8 +740,8 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | エラー（入力起因） | 該当ウィジェットに `errorText` 相当を表示（ERR-MACHINE-001/002/003/008/009/010/014/016） | 修正して再送信可 |
 | エラー（DB起因） | `ScaffoldMessenger.showSnackBar`（エラー配色）＋一覧の再取得（ERR-MACHINE-004〜007/011〜016） | 再送信可 |
 | エラー（認証） | サインイン画面へ遷移（`../../30_データ・IF設計/03_ドメインイベント.md §4` の共通挙動） | 操作不可 |
-| 削除確認 | `showDialog`（`AlertDialog` で確認） | — |
-| 同上・ERR-MACHINE-013 の場合 | 参照件数を提示して中止 | 参照中は削除不可 |
+| 削除確認 | `showDialog`（`AlertDialog` で確認）。種目の削除では、同時に消える器具の紐づけ台数を併記する | — |
+| 同上・履歴がある種目 | 「この種目は記録に使われているため削除できません」＋参照件数を提示して中止（ERR-MACHINE-013） | 削除は実行しない |
 
 ### 7.2 入力中のウィジェット構成
 
@@ -791,8 +812,8 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | TC-FEAT01-06 | `body_part` が RULE-003 の5値以外（L-02） | ERR-MACHINE-009。UI からは選べず、直接呼び出しでも DB CHECK（`23514`）で弾かれる |
 | TC-FEAT01-07 | 名称正規化（L-03） | 全角/半角・連続空白違いの同一名が重複と判定される |
 | TC-FEAT01-08 | 同一ジム内の同名器具 `[仮]` | ERR-MACHINE-007。現状は事前SELECTでのみ検知（UNIQUE 未設定・§10 #4） |
-| TC-FEAT01-09 | 器具から参照中の種目を削除 | ERR-MACHINE-013（`23503`）。`machine_menus` と `training_machines` の行が残る |
-| TC-FEAT01-10 | トレーニング明細から参照中の種目を削除 | ERR-MACHINE-013（`23503`）。履歴（`training_session_details`）が壊れない |
+| TC-FEAT01-09 | 器具から参照中（履歴は無い）の種目を削除 | 削除できる。`machine_menus` の行は CASCADE で消え、器具行は残る（種目0件になりうる・§10 #12） |
+| TC-FEAT01-10 | トレーニング明細から参照中の種目を削除 | ERR-MACHINE-013（`23503`）。削除されず履歴（`training_session_details`）が壊れない |
 | TC-FEAT01-11 | 存在しない id で更新・削除 | 例外は出ず空配列・`null` が返り、ERR-MACHINE-006/011 に写像される |
 | TC-FEAT01-12 | 性能（NFR-PERF-02） | 器具登録・一覧取得が ≤1秒（AI呼び出しを含まないこと） |
 | TC-FEAT01-13 | 登録順序の依存（L-04） | ジム0件・種目0件のとき登録フォームが無効化され、作成導線が出る |
@@ -824,15 +845,15 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | 1 | 〃 | 本書 §7 は SCR-02 内のダイアログで種目・ジムを即時作成する案を採った。**器具単体の原子性は RPC 3本で決着**（§2・§5・`../07_実装共通設計パターン.md §2` の案A） | 〃 |
 | 1 | 〃 | 残る未決は、**種目・ジムの作成まで同じ RPC に含めるか**（`create_menu_and_machine(...)` 相当） | 〃 |
 | 1 | 〃 | 含めなければ「種目を作ってそのまま器具を登録」は2呼び出し＝2トランザクションのまま。中間失敗時に種目だけが残る | 〃 |
-| 2 | 所有者が揃っていない（RLSが張れない） | `training_menus` 以外（`training_machines`・`machine_menus`・`gyms`）は所有者列を持たない（`../01_DB物理設計.md §1.2/§1.4`） | 🔴 高 |
-| 2 | 〃 | 器具のRLSは `machine_menus` 経由の `EXISTS` サブクエリでしか書けない（#14） | 〃 |
-| 2 | 〃 | `gyms` は本人限定に絞る手段が無く**全ユーザ共有マスタ**になる。単一ユーザでは顕在化しないが、**NFR-SCALE-01 の前提が外れた瞬間に他人のジム名が見える** | 〃 |
-| 2 | 〃 | 可視性が「設置ジム」でなく「種目の所有者」で決まる。同じジムに通う別ユーザは同一器具を各自登録し、実体が重複する | 〃 |
-| 2 | 〃 | **PostgREST 直接方式で深刻化する。** 中間層が消え RLS が唯一の強制点になる。JWT を持つ利用者は直叩きでき、アプリ側の検証はすべて迂回できる | 〃 |
-| 3 | 種目の削除が履歴を壊しうる | `training_session_details.menu_id` は NOT NULL FK。物理削除の挙動は `ON DELETE` 次第で、`NO ACTION`（既定）なら削除失敗、`CASCADE` なら履歴の明細ごと消える | 🔴 高 |
-| 3 | 〃 | ヒートマップの種目名（FEAT-05）は session→details→menus 経由で解決する。明細が消えると履歴の意味が失われる。§6.1 は `23503` を ERR-MACHINE-013 に写像する | 〃 |
-| 3 | 〃 | **論理削除（`deleted_at`）か物理削除＋参照禁止かは未決。** `../01_DB物理設計.md` に列を足す判断は行っていない | 〃 |
-| 3 | 〃 | `ON DELETE` は PostgREST 直接方式では**アプリから上書きできない**。DB の定義がそのまま挙動になる | 〃 |
+| 2 | ~~所有者が揃っていない（RLSが張れない）~~（**解決**） | `training_menus` 以外（`training_machines`・`machine_menus`・`gyms`）は所有者列を持たない（`../01_DB物理設計.md §1.2/§1.4`） | — |
+| 2 | 〃 | **2026-08-08 決定（ADR-0005）。`gyms` と `training_machines` は共通マスタで確定**（`TO authenticated USING (true)`）。所有者列は足さない | — |
+| 2 | 〃 | `machine_menus` は**親経由**で確定。`menu_id` の所有者が本人かを `EXISTS` で確かめる（#14） | — |
+| 2 | 〃 | 「本人」の述語も確定した。`users.id` を uuid にし、`auth.uid()` と直接比較する（案A・§5.5） | — |
+| 2 | 〃 | 残る懸念は、共通マスタを認証済みなら誰でも書き換えられること。単一ユーザ運用では実害が無い。Phase2（NFR-SCALE-01）で見直す（§5.5 に要確認として残した） | — |
+| 3 | ~~種目の削除が履歴を壊しうる~~（**解決**） | `training_session_details.menu_id` は NOT NULL FK。`ON DELETE` の指定次第で履歴の明細ごと消える恐れがあった | — |
+| 3 | 〃 | **2026-08-08 決定（ADR-0006）。案a で確定。** `training_session_details.menu_id` を `ON DELETE NO ACTION` にし、**履歴がある種目は物理削除できない** | — |
+| 3 | 〃 | 論理削除（`deleted_at`）は採らない。`../01_DB物理設計.md` に列を足さない | — |
+| 3 | 〃 | 削除は `23503` で失敗する。§6.1 が ERR-MACHINE-013 に写像し、画面は参照件数を出して中止する（§7） | — |
 | 4 | 重複登録を防ぐ一意制約の要否 | 同名の器具・種目・ジムを何度でも登録できる。現行 UNIQUE は `uq_tsd_session_menu` のみで、§3.5 は送信前 SELECT で検知する（ERR-MACHINE-007/012/015・すべて `[仮]`） | 🟡 中 |
 | 4 | 〃 | 事前SELECT方式は同時実行で取りこぼす。**PostgREST 直接方式では窓がさらに広い。** 検知と INSERT が同一トランザクションに入らず、悪意ある呼び出しは検知自体を飛ばせる | 〃 |
 | 4 | 〃 | DB側に `UNIQUE(gym_id, name)` / `UNIQUE(user_id, name)` を置けば `23505` として §6.1 の写像に乗る | 〃 |
@@ -866,46 +887,49 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | 13 | 〃 | PostgREST の埋め込み select はネスト形なので構造的に畳まれる。危ないのはビュー化・RPC 化・アプリ側の平坦化で、`DISTINCT`（または器具IDでの集約）を落とすと重複表示になる | 〃 |
 | 13 | 〃 | 検知しにくく、テストデータが「1器具1種目」だと再現しない（TC-FEAT01-22）。正本は FEAT-02 §5 | 〃 |
 | 14 | `machine_menus` に `user_id` が無い | 中間テーブルは所有者列を持たない。本人性は `menu_id` → `training_menus.user_id` を辿ってしか担保できず、#2 の RLS 論点が1段深くなる | 🟡 中 |
-| 14 | 〃 | 器具の可視性ポリシーは `machine_menus` を経由する `EXISTS` の入れ子になり、`machine_menus` 自体にも別途ポリシーが要る | 〃 |
+| 14 | 〃 | 器具は共通マスタになり入れ子の `EXISTS` は要らなくなったが、`machine_menus` 自体には別途ポリシーが要る（§5.5） | 〃 |
 | 14 | 〃 | 書き忘れると、他人の器具に自分の種目を紐づける・他人の紐づけを消す操作が通りうる | 〃 |
 | 14 | 〃 | 書き込み経路を RPC に一本化して面は狭まったが、テーブルへの直接 GRANT が残る限り塞がらない | 〃 |
-| 15 | 種目・器具の削除で中間テーブルの行が残りうる | 種目を削除するとき `machine_menus` の行も消す必要がある。FK の `ON DELETE` 方針は #3 のとおり未定である | 🟡 中 |
-| 15 | 〃 | `NO ACTION` なら「器具に紐づく種目は消せない」（ERR-MACHINE-013）。`CASCADE` なら紐づけだけ静かに消えて器具の対応部位が変わる | 〃 |
-| 15 | 〃 | 器具側は §5 の `delete_machine` で子から先に消す設計にした。`ON DELETE CASCADE` を張るなら関数側の DELETE は不要になる | 〃 |
-| 15 | 〃 | **どちらで担保するかを二重に決めない**こと | 〃 |
+| 15 | ~~種目・器具の削除で中間テーブルの行が残りうる~~（**解決**） | 種目を削除するとき `machine_menus` の行も消す必要がある。FK の `ON DELETE` 方針が未定だった | — |
+| 15 | 〃 | **2026-08-08 決定。`machine_menus` の2本の FK（`machine_id`・`menu_id`）はいずれも `ON DELETE CASCADE`。** 紐づけだけが消え、履歴には影響しない | — |
+| 15 | 〃 | 担保は FK に一本化した。§5.2 の `delete_machine` から子行の DELETE を外し、二重に持たせない | — |
+| 15 | 〃 | 副作用として、種目を消すと器具の対応部位が静かに変わる。その種目にしか紐づいていない器具は種目0件になる（#12 は未決のまま） | — |
 | 16 | 紐づけ全置換の副作用 | §5.7 の全置換（DELETE → INSERT）は、器具名だけを直した場合でも `machine_menus` の全行を作り直す。`created_at` が毎回更新され、`id` の identity も消費する | 🟢 低 |
 | 16 | 〃 | 紐づけの作成日時を業務で使わないため実害は無いと評価した。ただし将来「いつからこの器具でこの種目をやっているか」を出す要件が来ると成立しない | 〃 |
 
-> ⚠️ 要確認（人間判断）: #1〜#4 が判断待ち。#5 は多対多化で解決した。
+> ⚠️ 要確認（人間判断）: #1 と #4 が判断待ち。#2・#3・#5 は解決した。
 >
 > - #1 種目・ジムの作成まで器具登録の RPC に含めるか（器具単体の原子性は RPC 採用で決着）。
-> - #2 `gyms`・`training_machines`・`machine_menus` の所有者列およびRLSポリシーの方式。
-> - #3 種目削除を物理削除で禁止するか論理削除に切り替えるか（FKの `ON DELETE` の指定を含む）。
+> - ~~#2 `gyms`・`training_machines`・`machine_menus` の所有者列およびRLSポリシーの方式。~~（**解決**・ADR-0005）
+> - ~~#3 種目削除を物理削除で禁止するか論理削除に切り替えるか（FKの `ON DELETE` の指定を含む）。~~（**解決**・ADR-0006）
 > - #4 重複を DB の UNIQUE で防ぐかアプリ層に留めるか。
-> - いずれも `../01_DB物理設計.md` のスキーマ変更を伴う。
+> - #4 は `../01_DB物理設計.md` のスキーマ変更を伴う。
 > - 本書では列・制約・INDEX・ビューを追加せず指摘に留めた。
 
-> ⚠️ 要確認（人間判断）: #12・#15 と、RPC 3本の DDL 追記が判断待ち。
+> ⚠️ 要確認（人間判断）: #12 と、RPC 3本の DDL 追記が判断待ち。#15 は解決した。
 >
 > - #12 種目0件の器具を構造的に作れなくするか。
 > - #12 の具体案は、`machine_menus` への直接 GRANT を外し書き込みを RPC のみに限定すること。
-> - #15 種目削除時に `machine_menus` の行を FK の `ON DELETE CASCADE` で消すか関数の中で消すか。
+> - ~~#15 種目削除時に `machine_menus` の行を FK の `ON DELETE CASCADE` で消すか関数の中で消すか。~~（**解決**・FK の `CASCADE` に一本化）
 > - 器具の RPC 3本（`create_machine` / `update_machine` / `delete_machine`）を新設する。
 > - この3本は `../01_DB物理設計.md` に存在しないオブジェクトである。
 > - 採用するならマイグレーション（`../04_移行設計.md §3`）と DDL への追記が要る。
 
-> ⚠️ 要確認（人間判断）: RLSポリシーで「本人」を表す述語がまだ書けない。
+> ~~要確認（人間判断）: RLSポリシーで「本人」を表す述語がまだ書けない。~~（**解決**）
 >
-> - 理由は `auth.uid()`(uuid) と `users.id`(bigint) の紐付け方式が未確定なため。
-> - 正本は `../06_DB設計規約.md` とし、本書では方式を決めない。
+> - ~~理由は `auth.uid()` と `users.id` の紐付け方式が未確定なため。~~
+> - **案A で確定（ADR-0005）。** `users.id` は uuid で `auth.users.id` と一致する。
+> - 述語は `user_id = auth.uid()` になる。正本は `../01_DB物理設計.md §3`。
 
-> ⚠️ 要確認（人間判断）: 本書と既存ADR・段3で前提が食い違っている。
+> ~~⚠️ 要確認（人間判断）: 本書と既存ADR・段3で前提が食い違っている。~~（**解決**・2026-08-08）
 >
 > - 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
-> - ADR-0001（Vercel AI Gateway 採用）は Vercel 前提のまま。
-> - ADR-0002（Next.js + Mantine 採用）も Vercel 前提のまま。
-> - `../../30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同様。
-> - 後継ADRの起票と段3の改訂が必要。
+> - ~~ADR-0001（Vercel AI Gateway 採用）は Vercel 前提のまま。~~
+> - ~~ADR-0002（Next.js + Mantine 採用）も Vercel 前提のまま。~~
+> - ~~`../../30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同様。~~
+> - ~~後継ADRの起票と段3の改訂が必要。~~
+> - **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
+> - ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
 > ⚠️ 要確認（人間判断）: 段3 の HTTP 契約は本書の方式に置き換わる。段3側の改訂が要る。
 >
