@@ -31,19 +31,19 @@ status: draft
 - **呼び出しは2種類のみ**。いずれも1往復で完結する同期呼び出し。外部にジョブを作らない。
 
 ```
-analyze-meal（FEAT-08・SCR-04） → Flutter → Storage → Edge Function:
-  ① Flutter が長辺1024pxへリサイズし meal-photos バケットへアップロード
-  ② Edge Function: JWT検証・入力検証（オブジェクトパス1件）
-  ③ Storage から画像を取得し base64 化 → 固定プロンプトと組立（DBには書かない・ADR-0003）
-  ④ generateContent → Gemini API（構造化出力）
-  ⑤ zod 検証 → 栄養4項目を200で応答 ／ 同時に Storage の画像を削除
+analyze-meal（FEAT-08・SCR-04） → Flutter → Edge Function（画像を直接POST）:
+  Flutter: 長辺1024pxへリサイズし、画像バイトを直接POST（ADR-0003・リサイズ必須）
+  ① Edge Function: JWT検証・入力検証（MIME・サイズ）
+  ② 受け取った画像バイトを base64 化 → 固定プロンプトと組立（DBには書かない・ADR-0003）
+  ③ generateContent → Gemini API（構造化出力）
+  ④ zod 検証 → 栄養4項目を200で応答。画像はメモリ上のみで、どこにも書かない
   → 監査ログ: 時刻・用途(meal_analyze)・成否・モデルID（NFR-SEC-AUDIT-01）／correlation_id を付与
 
 generate-menu（FEAT-03・SCR-03） → Flutter → Edge Function:
-  ⑥ Edge Function: JWT検証・入力検証（body_part, machine_ids）
-  ⑦ 器具・種目名をDB照会しプロンプト組立（AI不使用・RULE-004）
-  ⑧ generateContent → Gemini API（構造化出力）
-  ⑨ zod 検証 → 提案メニューを200で応答（提案自体は永続化しない）
+  ⑤ Edge Function: JWT検証・入力検証（body_part, machine_ids）
+  ⑥ 器具・種目名をDB照会しプロンプト組立（AI不使用・RULE-004）
+  ⑦ generateContent → Gemini API（構造化出力）
+  ⑧ zod 検証 → 提案メニューを200で応答（提案自体は永続化しない）
   → 監査ログ: 時刻・用途(menu_generate)・成否・モデルID（NFR-SEC-AUDIT-01）／correlation_id を付与
 ```
 
@@ -51,24 +51,30 @@ generate-menu（FEAT-03・SCR-03） → Flutter → Edge Function:
 
 | # | 手順 | エンドポイント | 内容 | 記録 |
 |---|---|---|---|---|
-| ① | FEAT-08 写真アップロード | `supabase.storage.from('meal-photos').upload(...)` | Flutter が長辺1024pxへリサイズして一時アップロード（ADR-0003）。バケット名 `meal-photos` `[仮]`。RLS で本人のみ書き込み可 | アプリログ（`service=okada-fit-app`） |
-| ② | FEAT-08 認証・入力検証 | `supabase.functions.invoke('analyze-meal')` | Edge Function が Supabase Auth の JWT を検証（NFR-SEC-01）。オブジェクトパスの所有者一致・MIME・サイズを検証し、相関ID（`correlation_id`）を発番 | Edge Function ログ（`../05_ログ設計.md §6`） |
-| ③ | FEAT-08 入力組立 | （内部） | Storage から画像を取得し base64 化。`inlineData` `[仮]` に載せて固定プロンプトと組み立てる。**画像をDBに書かない** | — |
-| ④ | FEAT-08 栄養価推定 | `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` `[仮]` | `responseSchema`=`{ food_name, dish_names[], calories_kcal, protein_g, sugar_g, fat_g }` `[仮]` | **監査ログ**（時刻・用途・成否・モデルID／NFR-SEC-AUDIT-01・`../05_ログ設計.md §3`） |
-| ⑤ | FEAT-08 応答整形・画像削除 | `supabase.storage.from('meal-photos').remove(...)` | zod 検証済みオブジェクトを 200 応答へ。**成否によらず画像を削除**（ADR-0003）。栄養4項目の保存は別途 `supabase.from('meal_logs').insert(...)` | アプリログ（所要時間・目標 ≤20秒 NFR-PERF-04） |
-| ⑥ | FEAT-03 認証・入力検証 | `supabase.functions.invoke('generate-menu')` | JWT を検証。`body_part`（5種・RULE-003）と `machine_ids` を検証し、相関IDを発番 | Edge Function ログ |
-| ⑦ | FEAT-03 入力組立 | （内部） | `machine_ids` から器具・種目名を照会（RLS で本人行のみ）しプロンプト化。**絞り込みはAI不使用**（RULE-004） | Edge Function ログ |
-| ⑧ | FEAT-03 メニュー提案 | 同 ④ `[仮]` | `responseSchema`=`{ menus: [ { name, how_to } ] }` `[仮]` | **監査ログ**（時刻・用途・成否・モデルID／NFR-SEC-AUDIT-01） |
-| ⑨ | FEAT-03 応答整形 | （内部） | zod 検証済みオブジェクトを 200 応答へ。提案は保存しない | アプリログ（所要時間・目標 ≤15秒 NFR-PERF-03） |
+| ① | FEAT-08 認証・入力検証 | `supabase.functions.invoke('analyze-meal')` | Edge Function が Supabase Auth の JWT を検証（NFR-SEC-01）。画像の MIME・サイズを検証し、相関ID（`correlation_id`）を発番 | Edge Function ログ（`../05_ログ設計.md §6`） |
+| ② | FEAT-08 入力組立 | （内部） | 受け取った画像バイトを base64 化。`inlineData` `[仮]` に載せて固定プロンプトと組み立てる。**画像をDBに書かない** | — |
+| ③ | FEAT-08 栄養価推定 | `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` `[仮]` | `responseSchema`=`{ food_name, dish_names[], calories_kcal, protein_g, sugar_g, fat_g }` `[仮]` | **監査ログ**（時刻・用途・成否・モデルID／NFR-SEC-AUDIT-01・`../05_ログ設計.md §3`） |
+| ④ | FEAT-08 応答整形 | （内部） | zod 検証済みオブジェクトを 200 応答へ。**画像は永続化しない**（ADR-0003）。栄養4項目の保存は別途 `supabase.from('meal_logs').insert(...)` | アプリログ（所要時間・目標 ≤20秒 NFR-PERF-04） |
+| ⑤ | FEAT-03 認証・入力検証 | `supabase.functions.invoke('generate-menu')` | JWT を検証。`body_part`（5種・RULE-003）と `machine_ids` を検証し、相関IDを発番 | Edge Function ログ |
+| ⑥ | FEAT-03 入力組立 | （内部） | `machine_ids` から器具・種目名を照会（RLS で本人行のみ）しプロンプト化。**絞り込みはAI不使用**（RULE-004） | Edge Function ログ |
+| ⑦ | FEAT-03 メニュー提案 | 同 ③ `[仮]` | `responseSchema`=`{ menus: [ { name, how_to } ] }` `[仮]` | **監査ログ**（時刻・用途・成否・モデルID／NFR-SEC-AUDIT-01） |
+| ⑧ | FEAT-03 応答整形 | （内部） | zod 検証済みオブジェクトを 200 応答へ。提案は保存しない | アプリログ（所要時間・目標 ≤15秒 NFR-PERF-03） |
 
-**写真の受け渡し（FEAT-08）** — 旧設計から構造ごと変わった箇所。
+**写真の受け渡し（FEAT-08）** — 画像は Edge Function へ直接POSTする。
 
 | 項目 | 内容 |
 |---|---|
-| 旧 | 画像を multipart で サーバへ直接POST していた |
-| 新 | Flutter → Storage `meal-photos` → Edge Function が取得 → Gemini |
-| 変更理由 | Edge Function のリクエストボディ上限が未文書化のため `[仮]` |
-| Storage の位置づけ | 保管庫ではなく**転送路**。推論完了と同時に削除する（ADR-0003 の「保持しない」を維持） |
+| 旧 | 画像を multipart でサーバへ直接POST していた |
+| 新 | **Flutter → Edge Function（直接POST）**。宛先が `analyze-meal` に変わるだけで、直接送る点は変わらない |
+| リサイズ | 送信前に長辺1024pxへ縮小する（ADR-0003・必須）。上限に当たらないための担保でもある |
+| 画像サイズ | リサイズ後の実測で最大約300KB。base64 化しても約400KB |
+| 上限との関係 | Edge Function のメモリは256MB。400KB は 0.2% 未満で問題にならない |
+| 画像の保持 | Edge Function のメモリ上のみ。永続化しない（ADR-0003） |
+| 経緯 | 一時 Storage 経由に改めたが、実測と上限の確認により直接POSTへ戻した（2026-08-08 決定） |
+
+**ADR-0003 との矛盾は無い。** 直接POST・画像を保持しないという当初方針のままであり、**ADR-0003 の改訂は不要**。ADR-0001・ADR-0002・段3 API設計の改訂は引き続き必要（下記 ⚠️）。
+
+> ⚠️ 要確認（人間判断）: Edge Function の**リクエストボディ上限は公式ドキュメントに記載が無い**（未文書化）。実測400KBで詰まる可能性は極めて低いが、実装時に実際のサイズで1回検証する。検索で出る「10MB」等は**関数のデプロイサイズ**であり、リクエストボディとは別物。
 
 - 照会: **本連携では該当なし**（同期リクエスト応答で1往復完結し、外部に照会可能なジョブ／statusを作らないため）。したがって `../02_バッチ設計.md` のポーリングバッチは EXT-01 では使わない。
 - エラー詳細の所在: **3階層**に分かれて返る。判定は (a) → (b) → (c) の順で行う。
@@ -96,7 +102,7 @@ generate-menu（FEAT-03・SCR-03） → Flutter → Edge Function:
 
 > ⚠️ 要確認（人間判断）: `ERR-AI-CREDIT` の検知条件が未確定 `[仮]`。Gemini API は残高切れに 402 を返さず、クォータ超過と同じ 429（`RESOURCE_EXHAUSTED`）へ混ざる可能性が高い。区別できないと「429＝バックオフ再送」の方針で残高切れを叩き続けることになる。応答本文のどのフィールドで切り分けるかを実装前に確認する。
 
-> ⚠️ 要確認（人間判断）: アプリ→Edge Function の契約が段3と乖離している。`POST /api/meals/analyze` は `analyze-meal`、`POST /api/menus/generate` は `generate-menu` に置き換わる。FEAT-08 は画像 multipart ではなく Storage のオブジェクトパスを渡す形へ変わる。`../../30_データ・IF設計/02_API設計.md §4.1・§4.2` の契約表の改訂が必要。
+> ⚠️ 要確認（人間判断）: アプリ→Edge Function の契約が段3と乖離している。`POST /api/meals/analyze` は `analyze-meal`、`POST /api/menus/generate` は `generate-menu` に置き換わる。FEAT-08 は画像を直接POSTする点が変わらないため、変わるのは宛先だけである。`../../30_データ・IF設計/02_API設計.md §4.1・§4.2` の契約表の改訂が必要。
 
 ## 2. Google Gemini API status → 本PJ status 写像 `[仮]`
 > 📝 ここに外部システムのstatus値を本PJの状態（ST）へ写像する表を記載。正本は `01_DB物理設計.md` のenum・`30_データ・IF設計/03_ドメインイベント.md`。{外部status／区分／本PJ status／遷移ID}
@@ -149,15 +155,6 @@ generate-menu（FEAT-03・SCR-03） → Flutter → Edge Function:
 | 照会 | 障害調査時に **Supabase Edge Function ログ**を `correlation_id` で横断検索する（**外部への照会には使わない**＝Gemini API 側に問い合わせキーは無い） |
 | 終端 | 応答の返却をもって終端。**DBに永続化しない**（相関ID用の列を業務テーブルに追加しない） |
 
-**Storage オブジェクトパス（FEAT-08 の一時識別子）** — 外部識別子ではないが、ライフサイクルを固定する。
-
-| 段階 | 内容 |
-|---|---|
-| 発番 | Flutter が `{user_id}/{uuid}.jpg` `[仮]` の形で採番し `meal-photos` へアップロードする |
-| 受渡 | `analyze-meal` のリクエストボディでパスのみを渡す。画像本体は渡さない |
-| 検証 | Edge Function がパス先頭の `user_id` と JWT の `sub` の一致を確認する（RLS と二重で防ぐ） |
-| 終端 | 推論の成否によらず削除する。削除に失敗した場合の掃除手段は未設計（下記 §4 論点4） |
-
 > ⚠️ 要確認（人間判断）: `correlation_id` の発番方式（UUIDv4 ／ Supabase 側リクエストIDの流用）と、応答ヘッダで利用者へ返すか否かが未確定 `[仮]`。ログの保存先・保持期間は `../05_ログ設計.md §4` の確定待ちであり、本書では方式を決めない。
 
 ## 4. 敵対的検証・要確認事項
@@ -167,12 +164,11 @@ generate-menu（FEAT-03・SCR-03） → Flutter → Edge Function:
 | 1 | zodスキーマ検証失敗のERRが未定義 | §1 のマッピングで `ERR-AI-FAIL` `[仮]` としたが共通契約に定義が無い。専用ERR新設か既存流用かで段6のRED母集合が変わる | 🔴 高 |
 | 2 | Gemini API への単一プロバイダ依存 | 連携先は EXT-01 の1件のみ。**モデルフォールバックの手段が無くなった**（Gateway 消滅）。Gemini API が落ちれば AI 機能は全面停止し、縮退以外の逃げ道が無い | 🔴 高 |
 | 3 | `ERR-AI-CREDIT` の検知条件 | Gemini API は 402 を返さない見込み `[仮]`。課金上限が 429 に混ざると、README の再送方針（429=バックオフ再送／402=再送しない）が誤判定で崩れる | 🔴 高 |
-| 4 | Storage の削除漏れ | 推論後の削除に失敗すると写真が `meal-photos` に残る。ADR-0003「保持しない」に反する。バケットのTTL・定期削除といった掃除手段が未設計 | 🔴 高 |
-| 5 | タイムアウト値の根拠 | NFR-PERF-03/04（15秒／20秒）は**画面側の性能目標**。Storage 往復（アップロード＋取得＋削除）が加わり、Gemini API に割ける持ち時間は旧設計より短い。打ち切り値は未検証 | 🟡 中 |
-| 6 | Edge Function の実行時間・ボディ上限 | 上限値が未確認 `[仮]`。写真を Storage 経由にした前提そのものが上限次第で変わる。実行時間上限が推論時間を下回ると FEAT-08 が成立しない | 🟡 中 |
-| 7 | 縮退時の手入力フォールバック | FEAT-08 の AI 失敗時に栄養値を手入力できるかは画面設計（SCR-04）側の未確定事項。できない場合、NFR-AVAIL-05 の「記録は継続」が実質成立しない | 🟡 中 |
-| 8 | プロバイダ側のデータ保持 | ADR-0003 は**自システムで保存しない**決定であり、Google 側の ZDR／学習利用の設定は未確認。無料枠は学習利用の対象になり得る `[仮]` | 🟡 中 |
-| 9 | 監査ログの記録項目 | NFR-SEC-AUDIT-01 の「外部送信の記録」として時刻・用途・成否・モデルIDを記録する前提だが、`../05_ログ設計.md` 側の項目定義が未確定。プロンプト本文・画像を記録**しない**ことは ADR-0003 から必須 | 🟢 低 |
+| 4 | タイムアウト値の根拠 | NFR-PERF-03/04（15秒／20秒）は**画面側の性能目標**。持ち時間のほぼ全量を Gemini API に割けるが、打ち切り値そのものは未検証 | 🟡 中 |
+| 5 | Edge Function の実行時間・ボディ上限 | 上限は確認済み。実行時間は**無料150秒／有料400秒**、CPU時間は**2秒（非同期I/Oを含まない）**、メモリは**256MB**。Gemini の応答待ちは非同期I/Oのため CPU時間に算入されず、目標20秒（NFR-PERF-04）に対し余裕がある。**残る未確定はリクエストボディ上限のみ**（未文書化・上記 §1 の ⚠️） | 🟢 低 |
+| 6 | 縮退時の手入力フォールバック | FEAT-08 の AI 失敗時に栄養値を手入力できるかは画面設計（SCR-04）側の未確定事項。できない場合、NFR-AVAIL-05 の「記録は継続」が実質成立しない | 🟡 中 |
+| 7 | プロバイダ側のデータ保持 | ADR-0003 は**自システムで保存しない**決定であり、Google 側の ZDR／学習利用の設定は未確認。無料枠は学習利用の対象になり得る `[仮]` | 🟡 中 |
+| 8 | 監査ログの記録項目 | NFR-SEC-AUDIT-01 の「外部送信の記録」として時刻・用途・成否・モデルIDを記録する前提だが、`../05_ログ設計.md` 側の項目定義が未確定。プロンプト本文・画像を記録**しない**ことは ADR-0003 から必須 | 🟢 低 |
 
 > ⚠️ 要確認（人間判断）: 論点2（単一プロバイダ依存）について、本書は「代替経路を持たず縮退のみ」を前提に記述している。別プロバイダへの二重化を行う場合は EXT-ID の追加を伴う設計変更となるため、岡田さんの判断が必要。
 

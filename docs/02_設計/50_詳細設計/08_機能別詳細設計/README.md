@@ -19,11 +19,10 @@ Flutter アプリ（Dart・iOS先行・TestFlight配布）
   └ supabase_flutter
       ├ Auth              サインイン・JWT保持
       ├ PostgREST         テーブルを直接CRUD（RLSで保護）
-      ├ Storage           食事写真の一時置き場（推論後に即削除）
       └ Functions.invoke  Edge Function 呼び出し
 
 Supabase
-  ├ Auth / PostgreSQL + RLS / Storage
+  ├ Auth / PostgreSQL + RLS
   └ Edge Functions（Deno）
       └ Google Gemini API を直接呼ぶ（APIキーは環境変数）
 ```
@@ -37,6 +36,9 @@ Supabase
 | Edge Function | AIを呼ぶとき | 03・08（解析） |
 
 **AIを呼ぶ機能だけ Edge Function を経由する。** APIキーを端末に置かないため（NFR-SEC-02）。
+
+**食事写真は Edge Function へ直接POSTする。Supabase Storage は使わない**（ADR-0003）。
+2026-08-07 の改訂で一時 Storage 経由としたが、実測（長辺1024pxで最大約303KB・base64で約400KB）と Edge Function の上限確認により 2026-08-08 に直接POSTへ戻した。
 
 ## 本フォルダの位置づけ
 
@@ -60,7 +62,7 @@ Supabase
 | FEAT-05 | ダッシュボード表示 | [FEAT-05_ダッシュボード.md](FEAT-05_ダッシュボード.md) | RPC `get_dashboard` | — | SCR-01 |
 | FEAT-06 | 初期設定（体重・目標） | [FEAT-06_初期設定.md](FEAT-06_初期設定.md) | PostgREST `users` | — | SCR-05 |
 | FEAT-07 | 必要タンパク質量の算出 | [FEAT-07_必要タンパク質量算出.md](FEAT-07_必要タンパク質量算出.md) | 専用APIなし（共有ロジック） | — | SCR-01 / SCR-05 |
-| FEAT-08 | 食事撮影・タンパク質計算 | [FEAT-08_食事撮影タンパク質計算.md](FEAT-08_食事撮影タンパク質計算.md) | Storage → Edge Function `analyze-meal` → PostgREST | **EXT-01** | SCR-04 |
+| FEAT-08 | 食事撮影・タンパク質計算 | [FEAT-08_食事撮影タンパク質計算.md](FEAT-08_食事撮影タンパク質計算.md) | Edge Function `analyze-meal` → PostgREST | **EXT-01** | SCR-04 |
 | FEAT-09 | タンパク質残量・不足分提示 | [FEAT-09_タンパク質残量と不足分提示.md](FEAT-09_タンパク質残量と不足分提示.md) | RPC `get_protein_remaining` | — | SCR-01 / SCR-04 |
 | FEAT-10 | 食事マスタCSVインポート | [FEAT-10_食事マスタCSVインポート.md](FEAT-10_食事マスタCSVインポート.md) | RPC `replace_foods` | — | SCR-05 |
 
