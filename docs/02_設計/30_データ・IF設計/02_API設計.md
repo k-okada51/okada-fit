@@ -52,8 +52,8 @@ status: draft
 
 | メソッド/パス | 対応IF | 認証 | 概要 |
 |---|---|---|---|
-| POST `/api/machines` | 内部 | 要 | 器具(マシン)登録（gym_id・menu_id・name） |
-| GET `/api/machines?body_part=胸` | 内部 | 要 | 部位で種目→器具を絞り込み（AI不使用・RULE-004） |
+| POST `/api/machines` | 内部 | 要 | 器具(マシン)登録（gym_id・name・`menu_ids[]`＝対応種目を1件以上） |
+| GET `/api/machines?body_part=胸` | 内部 | 要 | 部位で種目→中間(`machine_menus`)→器具を絞り込み（`DISTINCT`・AI不使用・RULE-004） |
 | GET/POST/PUT/DELETE `/api/menus` | 内部 | 要 | 種目マスタ（name・body_part・how_to） |
 | GET/POST `/api/gyms` | 内部 | 要 | ジム管理 |
 | POST `/api/gym-visits` | 内部 | 要 | 入館記録（ヒートマップの実施有無元） |
@@ -65,6 +65,13 @@ status: draft
 | POST `/api/meals` | 内部 | 要 | 食事記録の保存（栄養4項目・画像は非保存） |
 | GET `/api/protein/remaining` | 内部 | 要 | 当日残量＝目標−摂取、不足を補う食品候補（FEAT-09） |
 | POST `/api/foods/import` | 内部 | 要 | 食事マスタCSV取込（FEAT-10） |
+
+器具↔種目は**多対多**（中間テーブル `machine_menus`・正本＝`01_データモデル.md`）。契約への影響は次の2点。
+
+| 対象 | 影響 |
+|---|---|
+| 器具登録・更新 | 単一の `menu_id` ではなく `menu_ids[]`（bigint配列・1件以上）を受け取る。1台の器具が複数部位に対応する |
+| 部位での絞り込み | `training_menus` → `machine_menus` → `training_machines` を辿る。1台が同じ部位の種目を複数持つと重複するため **`DISTINCT` が必須** |
 
 ## 4. IF別 契約
 > 📝 各IFごとに、リクエスト／レスポンス／エラーの型を記載。実値は入れず型・必須/任意の枠のみ示す。

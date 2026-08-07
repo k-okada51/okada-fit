@@ -52,7 +52,8 @@ Edge Function 側の要点。
 | 項目 | 内容 |
 |---|---|
 | AI 呼び出し前に必ず DB 検証する | 器具の実在・所有・部位整合を確認する（§4・§5） |
-| AI に渡すのは器具IDではない | DB で解決した器具名・対応種目名・部位を渡す（§3(2)） |
+| 器具↔種目は多対多 | 中間テーブル `machine_menus` で結ぶ。1台の器具が複数の種目・複数の部位に対応する |
+| AI に渡すのは器具IDではない | DB で解決した器具名・対応種目名（器具ごとに複数）・部位を渡す（§3(2)） |
 | 生成結果は永続化しない | その場の提案。採用は利用者操作で FEAT-01／FEAT-04 に引き渡す `[仮]`（保存先未定義・§10 #1） |
 | 非冪等・自動リトライなし | EXT-01 は従量課金。1リクエスト＝1課金 |
 | 二重送信を抑止する | レート制限（NFR-SEC-05）と UI の disabled の二段で持つ |
@@ -79,8 +80,9 @@ sequenceDiagram
   E->>E: ③ 呼び出し元JWT を検証（未認証→ERR-AUTH-001）
   E->>E: ④ zod で入力パース（違反→ERR-VALIDATION-001）
   E->>E: ⑤ レート制限・多重実行チェック（NFR-SEC-05→ERR-MENU-003/006）
-  E->>D: ⑥ SELECT 器具の実在・所有・部位整合＋名称解決（呼び出し元JWT＝RLS本人行のみ）
-  D-->>E: 器具行（machine_name / menu_name / body_part）
+  E->>D: ⑥ SELECT machine_menus 経由で器具の実在・所有・部位整合＋名称解決（呼び出し元JWT＝RLS本人行のみ）
+  D-->>E: 器具×種目の行（machine_name / menu_name / body_part）
+  E->>E: ⑥-b machine_id で畳んで器具単位にする（DISTINCT・§5）
   alt 検証NG（件数不一致・部位不一致）
     E-->>F: ERR-MENU-001 / ERR-MENU-002（400）※Gemini API は呼ばない＝課金しない
   else 検証OK
@@ -188,11 +190,30 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 |---|---|---|
 | system | 役割（トレーニング指導）／出力は日本語／**与えた器具リスト内の器具だけを使う**／リストに無い器具・自重種目を提案しない／件数上限 MENU_MAX／`how_to` は手順とセット・回数の目安を含む粒度 | 実装方針 |
 | 入力: 部位 | `body_part`（RULE-003 の5値のうち1つ） | リクエスト |
-| 入力: 器具 | `machine_ids` から DB で解決した `{ machine_id, machine_name, menu_name }` の配列。**IDだけを渡さず名称を併せて渡す**（IDはモデルにとって意味を持たないため） | `training_machines` / `training_menus` |
+| 入力: 器具 | `machine_ids` から DB で解決した `{ machine_id, machine_name, menu_names[] }` の配列。**IDだけを渡さず名称を併せて渡す**（IDはモデルにとって意味を持たないため） | `training_machines` / `machine_menus` / `training_menus` |
 | 入力: 既存種目 | 本人・同一部位の `training_menus.name` 一覧（重複提案の抑止用）`[仮]` | `training_menus` |
 | 含めないもの | 体重・氏名等の個人属性、`GEMINI_API_KEY`、他ユーザーのデータ | NFR-SEC-02 |
 
-> ⚠️ 要確認（人間判断）: 「器具名＋対応種目名」を渡す設計では、`training_machines.menu_id` から既に種目名が引けるため、AI の付加価値が実質 `how_to` の文章生成と組合せ提案に限定される。FEAT-03 に期待する価値（新種目の発見か／やり方の説明か）を確定させたい（§10 #2）。
+器具1台は複数の種目に対応する（`machine_menus`）。そのため種目名は**器具ごとの配列**になる。
+
+```jsonc
+// 入力: 器具（DBで解決したプロンプト素材。型のみ・実データは書かない）
+[
+  {
+    "machine_id":   "bigint",
+    "machine_name": "string",
+    "menu_names":   ["string"]   // 指定 body_part の種目のみ。1件以上（0件の器具は §5 の検証で落ちる）
+  }
+]
+```
+
+| 観点 | 扱い |
+|---|---|
+| 配列の中身 | 要求 `body_part` に一致する種目名だけを入れる。他部位の種目名は渡さない |
+| 順序 | `machine_id` 昇順・`menu_name` 昇順で固定する（プロンプトの再現性のため） |
+| 重複 | 同一器具の同一種目名は1つに畳む（§5 の `DISTINCT`） |
+
+> ⚠️ 要確認（人間判断）: 「器具名＋対応種目名」を渡す設計では、`machine_menus` から既に種目名が引けるため、AI の付加価値が実質 `how_to` の文章生成と組合せ提案に限定される。FEAT-03 に期待する価値（新種目の発見か／やり方の説明か）を確定させたい（§10 #2）。
 
 ### 3.1 バリデーション規則
 | 項目 | 規則 | 違反時 |
@@ -201,7 +222,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 | `body_part` | 必須・文字列・RULE-003 の5値（`胸`/`背中`/`脚`/`肩`/`腕`）のいずれか | ERR-VALIDATION-001 (400) |
 | `machine_ids` | 必須・整数配列・1件以上・上限 MACHINE_MAX（既定10 `[仮]`）・重複なし | ERR-VALIDATION-001 (400) |
 | `machine_ids` の実在・所有 | 全IDが本人参照可能な `training_machines` に存在（RLS 経由で件数一致） | ERR-MENU-001 (400) |
-| `machine_ids` と `body_part` の整合 | 全器具の `menu_id` → `training_menus.body_part` が指定部位と一致（RULE-004） | ERR-MENU-002 (400) |
+| `machine_ids` と `body_part` の整合 | 全器具が `machine_menus` 経由で**指定部位の種目を1つ以上持つ**（RULE-004）。全種目が指定部位である必要はない | ERR-MENU-002 (400) |
 | 生成回数 | 単位時間あたりの生成回数が上限以内（NFR-SEC-05・閾値未確定） | ERR-MENU-003 (429) |
 | 多重実行 | 同一ユーザーの生成が同時に走っていない `[仮]` | ERR-MENU-006 (409) |
 | AI出力 | `JSON.parse` に成功し、zod スキーマを満たす | ERR-MENU-004 (500) |
@@ -211,8 +232,8 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 
 | # | ロジック | 内容 | 対応 |
 |---|---|---|---|
-| L1 | 部位・器具の整合判定 | 選択器具の対応種目の `body_part` が要求部位と全件一致することを DB 照会結果で判定。AI は使わない | RULE-004 |
-| L2 | プロンプト構成 | 部位・器具名・対応種目名・既存種目名を素材に system/prompt を組む。件数上限と「与えた器具のみ使用」制約を明示 | RULE-006 |
+| L1 | 部位・器具の整合判定 | 選択器具が `machine_menus` 経由で要求部位の種目を**1つ以上持つ**ことを DB 照会結果で判定。AI は使わない。判定は器具単位に畳んでから行う（§5） | RULE-004 |
+| L2 | プロンプト構成 | 部位・器具名・対応種目名（器具ごとの配列）・既存種目名を素材に system/prompt を組む。件数上限と「与えた器具のみ使用」制約を明示 | RULE-006 |
 | L3 | 生成件数の決定 | `提案件数上限 = min(選択器具数, MENU_MAX)`（MENU_MAX 既定5 `[仮]`）。器具数を超える提案は求めない | NFR-PERF-03（トークン量抑制） |
 | L4 | 幻覚フィルタ | AI 出力の各行の `machine_id` が要求 `machine_ids` に含まれない行を除去。除去件数はログに残す | §10 #3 |
 | L5 | 再生成抑止キー | `user_id` ＋ `body_part` ＋ ソート済 `machine_ids` からキャッシュキーを作り、短時間の同一入力再生成を抑止する `[仮]` | §10 #4 |
@@ -227,6 +248,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 | AI 応答時間 | timeout 未満 / 超過 | 200 / ERR-AI-TIMEOUT |
 
 純関数として切り出す（Deno 側・単体テスト対象・NFR-QUAL-01）:
+- `groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]`（器具×種目の行を `machine_id` で畳み `menu_names[]` にする・L1/L2 の前段）
 - `buildMenuPrompt(input: MenuPromptInput): { system: string; prompt: string }`（L2）
 - `resolveSuggestionCount(machineCount: number): number`（L3）
 - `filterHallucinatedMenus(menus: AiMenu[], allowedMachineIds: number[]): { kept: AiMenu[]; dropped: AiMenu[] }`（L4）
@@ -236,17 +258,21 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 
 ```sql
 -- (1) machine_ids の実在・所有・部位整合をまとめて検証し、プロンプト素材（名称）を解決する
---     返却行数が $1 の要素数と一致しなければ ERR-MENU-001 / ERR-MENU-002
-SELECT tm.id   AS machine_id,
+--     器具↔種目は多対多（machine_menus）。1台が同一部位の種目を複数持つと行が複数返る
+--     DISTINCT machine_id の件数が $1 の要素数と一致しなければ ERR-MENU-001 / ERR-MENU-002
+SELECT DISTINCT
+       tm.id   AS machine_id,
        tm.name AS machine_name,
        m.id    AS menu_id,
        m.name  AS menu_name,
        m.body_part
 FROM   training_machines tm
-JOIN   training_menus    m ON m.id = tm.menu_id
+JOIN   machine_menus     mm ON mm.machine_id = tm.id
+JOIN   training_menus    m  ON m.id = mm.menu_id
 WHERE  tm.id       = ANY($1::bigint[])
   AND  m.user_id   = $2
-  AND  m.body_part = $3;
+  AND  m.body_part = $3
+ORDER BY tm.id, m.name;
 
 -- (2) 重複提案の抑止用に、本人・同一部位の既存種目名を取得する [仮]
 SELECT name
@@ -257,13 +283,27 @@ WHERE  user_id   = $1
 
 Edge Function 内では上記2本を PostgREST 経由の埋め込み select として発行する `[仮]`（SQL は意図の記述であり、生SQLを発行するという意味ではない）。
 
+(1) は**器具×種目の行**を返す。器具単位の判定は畳んでから行う。
+
+| 判定 | 条件 | 違反時 |
+|---|---|---|
+| 実在・所有 | `machine_ids` の全IDが本人参照可能な `training_machines` に存在する | ERR-MENU-001 |
+| 部位整合 | 各器具が指定部位の種目を**1つ以上**持つ（RULE-004） | ERR-MENU-002 |
+
+- 判定式は `DISTINCT machine_id の件数 = machine_ids の要素数`。行数そのものと比較しない。
+- **従来の「器具の種目の部位＝指定部位」という1対1の判定は成立しない。** 器具は複数部位に対応するため、指定部位の種目を1つ以上持てば整合とみなす。他部位の種目を併せ持つことは違反ではない。
+- 種目を1件も持たない器具（`machine_menus` に行が無い）は、どの部位でも0行になり ERR-MENU-001 相当の扱いになる（§10 #14）。
+- 上の2判定はこのクエリ単独では切り分けられない（どちらも「畳んだ件数が足りない」として現れる）。切り分けが要るなら (1) を実在確認と部位確認の2本に分ける（§10 #15）。
+
+`ORDER BY` は §3(2) のプロンプト素材の順序を固定するために置く。
+
 | 観点 | 内容 |
 |---|---|
 | 認証コンテキスト | Edge Function は **service role key を使わない**。呼び出し元の `Authorization` ヘッダ（利用者JWT）をそのまま Supabase クライアントに渡す。RLS を効かせるため（ADR-0004） |
 | service role を避ける理由 | service role は RLS を素通りする。§10 #8 の「JOIN 条件だけが本人性の担保」という弱点と重なると、他人のジムの器具が読める |
-| 対象テーブル | `training_machines`（SELECT）／`training_menus`（SELECT）。**INSERT/UPDATE/DELETE は行わない** |
-| 使用INDEX | `training_menus` は PK と `user_id`・`body_part` の絞り込み。`training_machines.menu_id` に INDEX は `../01_DB物理設計.md §3` に未定義（件数小のため当面 seq scan 許容・§10 #9） |
-| RLS | `user_id = auth.uid()` 相当で本人行のみ。ただし `training_machines` は `gym_id` 所有で `user_id` 列を持たないため、本人性は `training_menus` への JOIN 条件でのみ担保される（§10 #8） |
+| 対象テーブル | `training_machines`（SELECT）／`machine_menus`（SELECT）／`training_menus`（SELECT）。**INSERT/UPDATE/DELETE は行わない** |
+| 使用INDEX | `training_menus` は PK と `user_id`・`body_part` の絞り込み。`machine_menus` は `uq_mm_machine_menu`（`machine_id, menu_id`）と `ix_mm_menu`（`menu_id`）を使う（正本＝`../01_DB物理設計.md §3`） |
+| RLS | `user_id = auth.uid()` 相当で本人行のみ。ただし `training_machines` も `machine_menus` も `user_id` 列を持たないため、本人性は `machine_menus` を挟んだ `training_menus` への JOIN 条件でのみ担保される。多対多化で経路が1段深くなった（§10 #8・#16） |
 | トランザクション境界 | なし（参照のみ）。EXT-01 呼び出しは DB 接続を保持したまま行わない |
 | 永続化 | 提案結果は保存しない。採用は利用者操作で FEAT-01（`training_menus` への PostgREST insert）／FEAT-04（RPC `create_training_session`）に委ねる `[仮]`（§10 #1） |
 
@@ -272,8 +312,8 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 |---|---|---|---|---|---|
 | ERR-AUTH-001 | 401 | 未認証・セッション切れ（JWT 不正・失効） | 再ログインを促す | false | 認証失敗（NFR-SEC-AUDIT-02） |
 | ERR-VALIDATION-001 | 400 | `body_part` が enum 外／`machine_ids` が空・上限超・重複 | 入力の選び直しを促す | false | warn（入力要約のみ） |
-| ERR-MENU-001 | 400 | 指定器具が存在しない、または本人が参照できない | 器具の選び直しを促す | false | warn（要求件数と取得件数） |
-| ERR-MENU-002 | 400 | 器具の対応種目の部位が選択部位と不一致（RULE-004違反） | 部位と器具の組合せを直す旨 | false | warn |
+| ERR-MENU-001 | 400 | 指定器具が存在しない、本人が参照できない、または対応種目が1件も無い | 器具の選び直しを促す | false | warn（要求件数と畳んだ後の件数） |
+| ERR-MENU-002 | 400 | 器具が選択部位の種目を1つも持たない（RULE-004違反） | 部位と器具の組合せを直す旨 | false | warn |
 | ERR-MENU-003 | 429 | アプリ側レート制限に到達（NFR-SEC-05・閾値未確定） | 時間をおいて再試行する旨 | true | warn（user・期間内回数） |
 | ERR-MENU-004 | 500 | AI 出力が `JSON.parse` 不能、または zod スキーマ不適合（件数0・型不一致等） | 生成に失敗した旨 | false | error（`finishReason`・`promptFeedback`。本文は残さない） |
 | ERR-MENU-005 | 500 | 幻覚フィルタ（L4）で全件除去され残0件 | 生成に失敗した旨 | false | error（除去件数） |
@@ -316,7 +356,7 @@ Flutter ウィジェットで記述する。
 | 1 | `supabase/functions/generate-menu/index.ts` | Edge Function 本体。JWT検証→入力検証→レート制限→DB検証→Gemini→フィルタ→整形 | `Deno.serve(async (req: Request): Promise<Response> => { ... })` |
 | 2 | `supabase/functions/generate-menu/schema.ts` | 入力 zod スキーマ・AI出力 zod スキーマ・`responseSchema` 定義 | `export const GenerateMenuRequestSchema` / `export const AiMenuOutputSchema` / `export const AI_MENU_RESPONSE_SCHEMA` |
 | 3 | `supabase/functions/generate-menu/prompt.ts` | プロンプト構成（純関数・§4 L2） | `export function buildMenuPrompt(input: MenuPromptInput): { system: string; prompt: string }` |
-| 4 | `supabase/functions/generate-menu/validate.ts` | 件数決定と幻覚フィルタ（純関数・§4 L3/L4） | `export function filterHallucinatedMenus(menus: AiMenu[], allowedMachineIds: number[]): FilterResult` |
+| 4 | `supabase/functions/generate-menu/validate.ts` | 器具×種目行の畳み込み・件数決定・幻覚フィルタ（純関数・§4 L1/L3/L4） | `export function groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]` / `export function filterHallucinatedMenus(menus: AiMenu[], allowedMachineIds: number[]): FilterResult` |
 | 5 | `supabase/functions/_shared/gemini.ts` | Gemini API 呼び出しの共通ラッパ（モデル設定値・`AbortSignal.timeout`・エラー写像）。**FEAT-08 と共有し重複実装しない** | `export async function generateStructured<T>(args: GenerateStructuredArgs<T>): Promise<T>` |
 | 6 | `supabase/functions/_shared/rate-limit.ts` | AI呼び出しの回数制限・多重実行抑止（NFR-SEC-05・§10 #4） | `export async function consumeAiQuota(userId: string, feature: string): Promise<QuotaResult>` |
 | 7 | `supabase/functions/_shared/supabase-client.ts` | 呼び出し元 JWT を引き継いだクライアント生成（§5） | `export function createUserClient(req: Request): SupabaseClient` |
@@ -331,7 +371,7 @@ Flutter ウィジェットで記述する。
 | TC-FEAT03-02 | 未認証（JWT 無し・失効） | 401・ERR-AUTH-001・**EXT-01 を呼ばない** |
 | TC-FEAT03-03 | 入力不正（`body_part` enum 外／`machine_ids` が空・重複・上限超） | 400・ERR-VALIDATION-001・EXT-01 を呼ばない |
 | TC-FEAT03-04 | 他人所有の器具ID／存在しないID | 400・ERR-MENU-001・EXT-01 を呼ばない |
-| TC-FEAT03-05 | 器具の部位が選択部位と不一致（RULE-004） | 400・ERR-MENU-002・EXT-01 を呼ばない |
+| TC-FEAT03-05 | 選択部位の種目を1つも持たない器具を指定（RULE-004） | 400・ERR-MENU-002・EXT-01 を呼ばない |
 | TC-FEAT03-06 | AI 出力が要求外の `machine_id` を含む（幻覚） | 該当行が除去される。残1件以上なら 200、全滅なら ERR-MENU-005 |
 | TC-FEAT03-07 | AI 出力が JSON として不正／スキーマ不一致 | 500・ERR-MENU-004・自動リトライしない |
 | TC-FEAT03-08 | AI 応答がタイムアウト閾値を超える | 504・ERR-AI-TIMEOUT・`fetch` は1回のみ |
@@ -341,11 +381,15 @@ Flutter ウィジェットで記述する。
 | TC-FEAT03-12 | 応答時間・副作用 | 正常系 ≤15秒（NFR-PERF-03）。成功/失敗いずれでも `training_menus` の行数が増えない |
 | TC-FEAT03-13 | 純関数 `buildMenuPrompt` | 器具名・種目名・部位・件数上限が構成物に含まれ、個人属性が含まれない |
 | TC-FEAT03-14 | service role の不使用 | Edge Function が他人の `machine_ids` を渡されたとき ERR-MENU-001 になる（RLS が効いている） |
+| TC-FEAT03-15 | 複数部位に対応する器具（指定部位の種目と他部位の種目を併せ持つ） | 200。プロンプト素材の `menu_names` は**指定部位の種目のみ**を含む |
+| TC-FEAT03-16 | 1台が同一部位の種目を複数持つ | 器具は重複せず1件として扱われる（`DISTINCT machine_id` で畳む・§5） |
+| TC-FEAT03-17 | 対応種目が0件の器具を指定 | 400・ERR-MENU-001・EXT-01 を呼ばない |
 
 受入基準（G/W/T）の候補:
 - [AC] Given 部位「胸」に対応する器具が登録済み When 器具を選んで［メニュー生成］を押す Then 15秒以内にメニュー案が1件以上表示される
 - [AC] Given 選択部位に対応する器具が0件 When SCR-03 を表示する Then ［メニュー生成］は押せず、器具登録（SCR-02）への導線が表示される
-- [AC] Given 選択した器具の部位が要求部位と一致しない When 生成を要求する Then ERR-MENU-002 が返り AI は呼び出されない
+- [AC] Given 選択した器具が要求部位の種目を1つも持たない When 生成を要求する Then ERR-MENU-002 が返り AI は呼び出されない
+- [AC] Given 1台で複数部位に対応する器具を選んでいる When 部位「胸」で生成を要求する Then 胸の種目だけを素材にメニュー案が生成される
 - [AC] Given Gemini API が不達 When 生成を要求する Then エラーが通知されるが、トレーニング記録と閲覧は継続して行える
 - [AC] Given メニュー案が表示された When 何も採用操作をしない Then 種目マスタには何も追加されない
 
@@ -355,18 +399,21 @@ Flutter ウィジェットで記述する。
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
 | 1 | 提案メニューの保存先が未定義 | `02_API設計.md §4.2` は応答型のみを定め保存先を定義していない。`training_menus` は `user_id` 所有の**種目マスタ**であり、AI提案をそのまま INSERT すると (a) 同名種目の重複、(b) 未検証の生成物によるマスタ汚染、(c) FEAT-02 の絞り込み結果や FEAT-05 のヒートマップ種目名への波及が起きる。本書は「Edge Function は保存しない・採用は利用者操作」を `[仮]` 採用したが、正本側の定義が必要 | 🔴 高 |
-| 2 | AI に渡す情報の粒度 | `machine_ids` は `training_machines.menu_id` から種目名を逆引きできるため、AI に「部位＋器具名＋既存種目名」を渡すと、返るのは既知種目の再掲になりやすい。器具名のみを渡す／種目名も渡す／部位だけ渡すで出力の性格が変わる。FEAT-03 の狙い（新種目の発見か `how_to` の生成か）が未定義 | 🟡 中 |
+| 2 | AI に渡す情報の粒度 | `machine_ids` は `machine_menus` から種目名を逆引きできるため、AI に「部位＋器具名＋既存種目名」を渡すと、返るのは既知種目の再掲になりやすい。多対多化で1器具あたりの種目名が増え、素材の情報量も増えたため、この傾向は強まる。器具名のみを渡す／種目名も渡す／部位だけ渡すで出力の性格が変わる。FEAT-03 の狙い（新種目の発見か `how_to` の生成か）が未定義 | 🟡 中 |
 | 3 | 幻覚の残存 | zod スキーマと `responseSchema` は型・件数しか保証せず、「存在しない器具を使うメニュー」を防げない。本書は AI 出力に検証用 `machine_id` を持たせて事後フィルタ（§4 L4）する案を `[仮]` としたが、`how_to` 本文中で別器具に言及するケースは機械的に検出できない。実運用での目視評価と、必要なら評価用データセットによる回帰確認が要る | 🔴 高 |
 | 4 | 生成のたびに課金される／カウンタの置き場所が無い | 同一入力（同一部位・同一器具集合）の再生成が毎回課金対象になる。抑止策は (a) 短期キャッシュ（§4 L5）、(b) 1日あたり回数上限、(c) UI で［再生成］に確認を挟む、の組合せ。**旧構成で想定していた Vercel Firewall のレート制限は使えない**。Supabase には KV/Redis が無いため、カウンタは Edge Function から読み書きする**専用テーブル**（例 `ai_usage_counters` `[仮]`）で持つほかない。新規テーブル追加になるため `../01_DB物理設計.md` への追記が要る。閾値・集計単位とも未確定 | 🔴 高 |
 | 5 | タイムアウトと Edge Function 実行時間上限の関係 | NFR-PERF-03 の15秒はアプリ側の UX 目標。これとは別に **Edge Function 自体の実行時間上限**（wall clock／CPU time）が存在する。実値は未確認 `[仮]`。上限が15秒を下回ると設計が成立しないため、**AI_MENU_TIMEOUT_MS を決める前に実測が要る**。また `AbortSignal` で中断してもモデル側でトークンは消費済みのことがあり、タイムアウト＝無課金ではない | 🔴 高 |
 | 6 | 単一プロバイダ依存・フォールバック手段が無い | Gemini API を直接呼ぶため、**モデル自動切替の仕組みが無くなった**。旧構成ではゲートウェイ側の設定でフォールバックモデルを並べられたが、その手段は失われた。代替は Edge Function 内に自前の切替ロジックを書くことだが、二重課金・レイテンシ倍増の risk があり本書では採らない。結果として Gemini API 障害＝FEAT-03 全停止。SCR-03 に「登録済み種目から手で選んでトレーニング記録する」経路を必ず残す（AI 必須の導線にしない） | 🔴 高 |
 | 7 | 構造化出力の失敗が共通エラー契約に無い | モデル応答が `responseSchema` に沿わない／JSON として壊れているケース（＝AIは応答したが型が合わない）に対応する ERR も HTTP ステータスも共通契約に無い。402/429/504/500 のいずれとも性質が違う（再試行しても同じ結果になりやすい）。本書は `ERR-MENU-004` を `[仮]` 採用したが、共通契約側への追加が要る | 🟡 中 |
 | 8 | `training_machines` に `user_id` が無い | `training_machines` は `gym_id` 所有のため RLS を直接適用できず、本人性は `training_menus` への JOIN 条件（§5 の `m.user_id = $2`）だけで担保される。JOIN 条件を落とした実装や別経路の追加で、他人のジムの器具が参照され得る。**Edge Function が service role key を使うとこの弱点が即座に露出する**ため、§5 のとおり呼び出し元 JWT を使う。列追加は本書では行わない | 🔴 高 |
-| 9 | `training_machines.menu_id` の INDEX 未定義 | 部位→器具は 2ホップ JOIN だが、`../01_DB物理設計.md §3` に `menu_id` の INDEX は無い。個人利用の件数では実害は出にくいが、FEAT-02 と共通の性能論点（NFR-PERF-02）として扱う必要がある | 🟢 低 |
+| 9 | ~~`training_machines.menu_id` の INDEX 未定義~~（解決） | ~~部位→器具は 2ホップ JOIN だが、`../01_DB物理設計.md §3` に `menu_id` の INDEX は無い~~。器具↔種目の多対多化で `training_machines.menu_id` は廃止され、中間テーブル `machine_menus` に `uq_mm_machine_menu`・`ix_mm_menu` が定義された。経路は3ホップになったが、両方向とも INDEX が効く。件数規模の性能論点（NFR-PERF-02）は FEAT-02 と共通で残る | 🟢 低 |
 | 10 | 横断方針の正本が未記入 | `../07_実装共通設計パターン.md` はテンプレートのままで、エラー分類・リトライ・多重制御の値が空。加えて同書は旧構成前提のまま。本書は暫定的に「非冪等・自動リトライなし・429のみバックオフ」を拠り所にしている | 🟡 中 |
 | 11 | 認証IDと `users.id` の紐付け | RLS の `user_id = auth.uid()` 相当を成立させる `users.id`(bigint) と Supabase `auth.uid()`(uuid) の紐付け方式が未確定（正本は `../06_DB設計規約.md`）。本書は方式を決めず前提としてのみ扱う | 🟡 中 |
 | 12 | 上位文書が旧構成のまま | ADR-0001・ADR-0002・段3の API 契約が旧構成前提。**FEAT-03 は ADR-0001 が根拠ADRそのもの**であり、後継ADRが無い状態では本書 §3(2)（Gemini API 直接呼び出し）・§6（エラー写像）・#6（フォールバック不在の受容）が根拠を持たない。後継ADRの起票が本機能の確定条件 | 🔴 高 |
 | 13 | Gemini API 仕様の未確認箇所 | `responseSchema` の対応範囲（`enum`・`minItems` 等をどこまで解釈するか）、`systemInstruction` のフィールド名、`thinkingConfig` の指定方法が未確認。本書は全て `[仮]`。実装時に公式ドキュメントで確認し、差分があれば §3(2) を改訂する | 🟡 中 |
+| 14 | 部位整合の判定条件が変わった | 器具↔種目の多対多化により、RULE-004 の判定が「器具の種目の部位＝指定部位」から「**器具が指定部位の種目を1つ以上持つ**」に変わった（§5）。他部位の種目を併せ持つ器具は違反ではない。RULE-004 の原文（`../../01_要件定義/`）は1対1を前提とした読み方もでき、条文側の追認が要る。あわせて、対応種目0件の器具を登録できるかが未定（許すと部位で引けず、指定しても ERR-MENU-001 になる） | 🟡 中 |
+| 15 | 絞り込みの `DISTINCT` と件数照合 | 1台が同一部位の種目を複数持つと (1) の結果に同じ器具の行が複数出る。`DISTINCT` を落とすと器具が重複して素材に入り、`resolveSuggestionCount`（L3）の器具数も過大になる。件数照合は行数ではなく `DISTINCT machine_id` の件数で行う。加えて ERR-MENU-001（実在・所有）と ERR-MENU-002（部位整合）は1本のクエリでは切り分けられず、分けるならクエリを2本にする必要がある | 🟡 中 |
+| 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` 列を持たない。本人性は `machine_menus` を挟んだ `training_menus` への JOIN 条件でのみ担保され、#8 の弱点が1段深くなった。JOIN を1つ落とすだけで他人の器具が素材に混ざる。RLS ポリシーを `machine_menus` にどう書くか（親の `training_menus` を参照する形になる）が未定 | 🟡 中 |
 
 > ⚠️ 要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング（保存しない／採用時のみ `training_menus` へ／別テーブルを設ける）。別テーブル案は新規テーブル追加になるため本書では採らない。
 > ⚠️ 要確認（人間判断）: #2 AI に渡す入力の粒度と、FEAT-03 が提供する価値の定義（新種目の発見か、既知種目の `how_to` 生成か）。
@@ -376,5 +423,7 @@ Flutter ウィジェットで記述する。
 > ⚠️ 要確認（人間判断）: #7 構造化出力の失敗（スキーマ不適合・JSON破損）に割り当てる ERR-ID と HTTP ステータスの共通契約への追加。FEAT-08 も同じ分岐を持つため、機能別ではなく共通側で決めるべき。
 > ⚠️ 要確認（人間判断）: #8 `training_machines` の本人性担保方式（JOIN 条件のみで足りるか、RLS ポリシーをどう書くか）。
 > ⚠️ 要確認（人間判断）: #12 後継ADRの起票（Gemini API 直接呼び出し・モデル選定・フォールバック不在の受容）。本機能の設計確定より前に必要。
+> ⚠️ 要確認（人間判断）: #14 RULE-004 の判定条件を「器具が指定部位の種目を1つ以上持つ」に確定してよいか。あわせて対応種目0件の器具を登録できるかを FEAT-01 と揃えて決める必要がある。
+> ⚠️ 要確認（人間判断）: #15 ERR-MENU-001 と ERR-MENU-002 を切り分けるためにクエリを2本に分けるか、1本のまま両者を統合した1つのエラーにするか。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

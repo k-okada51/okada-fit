@@ -55,8 +55,8 @@ Supabase
 
 | FEAT | 機能 | 詳細設計 | 呼び出し | AI | 画面 |
 |---|---|---|---|---|---|
-| FEAT-01 | 器具登録（部位タグ付与） | [FEAT-01_器具登録.md](FEAT-01_器具登録.md) | PostgREST `gyms`／`training_menus`／`training_machines` | — | SCR-02 |
-| FEAT-02 | 部位選択と器具の絞り込み | [FEAT-02_部位選択と器具絞り込み.md](FEAT-02_部位選択と器具絞り込み.md) | PostgREST（埋め込み select） | — | SCR-02 / SCR-03 |
+| FEAT-01 | 器具登録（種目を1件以上紐づけ） | [FEAT-01_器具登録.md](FEAT-01_器具登録.md) | RPC `create_machine` ほか＋PostgREST | — | SCR-02 |
+| FEAT-02 | 部位選択と器具の絞り込み | [FEAT-02_部位選択と器具絞り込み.md](FEAT-02_部位選択と器具絞り込み.md) | PostgREST（埋め込み select・`DISTINCT`） | — | SCR-02 / SCR-03 |
 | FEAT-03 | AIメニュー提案 | [FEAT-03_AIメニュー提案.md](FEAT-03_AIメニュー提案.md) | Edge Function `generate-menu` | **EXT-01** | SCR-03 |
 | FEAT-04 | トレーニング記録 | [FEAT-04_トレーニング記録.md](FEAT-04_トレーニング記録.md) | RPC `create_training_session`＋PostgREST | — | SCR-03 |
 | FEAT-05 | ダッシュボード表示 | [FEAT-05_ダッシュボード.md](FEAT-05_ダッシュボード.md) | RPC `get_dashboard` | — | SCR-01 |
