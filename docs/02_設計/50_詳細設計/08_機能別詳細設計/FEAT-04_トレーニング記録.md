@@ -27,11 +27,23 @@ status: draft
 |---|---|
 | 対応要件 | FEAT-04 トレーニング記録（実施日＋明細＝種目×実行済／入館記録） |
 | 対応画面 | SCR-03 トレーニング |
-| 対応API | RPC `create_training_session`（T01）／`training_session_details` の PostgREST update（T02）／`gym_visits` の PostgREST insert（入館） |
+| 対応API | 操作は3つ。方式は下の対応表 |
 | 関連ルール | RULE-003（部位タグ5種・種目マスタ側の制約）。算出ルールは持たない |
 | 外部連携 | なし（AI不使用の決定的処理） |
 | 性能目標 | NFR-PERF-02（決定的処理 ≤1秒）。画面表示は NFR-PERF-01（≤2秒） |
 | 状態 | ST-01 `not_done` ／ ST-02 `done`（遷移 T01・T02。正本＝`../../30_データ・IF設計/03_ドメインイベント.md`） |
+
+操作は**3つだけ**。呼び出し方式が3つとも違う。以降の節はこの区別に沿って読む。
+
+| # | 操作 | 遷移 | 方式 | 呼び出し先 | 詳細 |
+|---|---|---|---|---|---|
+| 1 | セッション＋明細の登録 | T01 | RPC | `create_training_session` | §2.2・§3.1 |
+| 2 | 実行済のトグル | T02 | PostgREST update | `training_session_details` | §2.3・§3.2 |
+| 3 | 入館記録 | なし | PostgREST insert | `gym_visits` | §2.4・§3.3 |
+
+3つとも `supabase_flutter` が保持済み JWT を自動で付ける（§2.1）。`user_id` は引数で渡さない。
+
+### 記録の2階層
 
 本機能は、ある日に実施したトレーニングを2階層で記録する。
 
@@ -41,6 +53,8 @@ status: draft
 | 明細 | `training_session_details` | 種目×実行済（`is_done`） |
 
 `is_done` は本PJで**唯一の永続状態**（ST-01/ST-02）。FEAT-05 ダッシュボードのヒートマップ（実施有無）と種目名ツールチップの集計元になる。
+
+### 入館記録の扱い
 
 入館記録（`gym_visits`）は同じ SCR-03 から行う。ただし `training_sessions` とは独立に扱う。
 
@@ -56,24 +70,32 @@ status: draft
 
 ### 2.1 認証の位置づけ（記録のたびに認証はしない）
 
-**「記録の前に認証が入る」のは毎回のログインではない。保持済み JWT による本人特定と RLS の適用である。**
+**毎回のログインは発生しない。** 図中の「認証」は、保持済み JWT の検証と RLS の適用を指す。JWT を新規取得する処理ではない。
+
+時系列で並べると次のとおり。
 
 | タイミング | 起きること | 利用者の操作 |
 |---|---|---|
-| 初回サインイン（1回だけ） | Supabase Auth が JWT を発行。`supabase_flutter` が端末に保持する | 要（ID/パスワード入力） |
+| 初回サインイン（1回だけ） | Supabase Auth が JWT を発行する | 要（ID/パスワード入力） |
+| 初回サインインの直後 | `supabase_flutter` が JWT を端末に保持する | 不要 |
 | 記録・トグル・入館のたび | 保持済み JWT が呼び出しに自動で付く | **不要** |
 | サーバ側（Postgres） | JWT から `auth.uid()` を得て本人を特定する | — |
 | サーバ側（RLS） | ポリシーが本人行だけに絞る。他人の行は読めず書けない | — |
-| JWT の期限切れ | `supabase_flutter` が自動更新する。更新も失敗したときだけ ERR-AUTH-001 | 再サインイン |
+| JWT の期限切れ | `supabase_flutter` が自動更新する | 不要 |
+| 自動更新も失敗したとき | ERR-AUTH-001 を返す | 再サインイン |
 
-- 以降の図中の「認証」は、**JWT を新規取得する処理ではない**。保持済み JWT の検証を指す。
-- 本人チェックの実体は RLS。アプリ側で `user_id` を組み立てて送ることはしない（§3）。
+- 本人チェックの実体は RLS。
+- アプリ側で `user_id` を組み立てて送ることはしない（§3）。
 
 ### 2.2 セッション＋明細の登録（T01）
 
-トランザクション境界は「`training_sessions` INSERT → `training_session_details` 一括 INSERT」の1単位。
+トランザクション境界は1単位。「`training_sessions` INSERT → `training_session_details` 一括 INSERT」をまとめて扱う。
 
-PostgREST は複数リクエストをまたぐトランザクションを張れない。そのため **Postgres 関数（RPC）1回の呼び出しに閉じる**（設計判断は §5.1）。
+| 論点 | 内容 |
+|---|---|
+| 制約 | PostgREST は複数リクエストをまたぐトランザクションを張れない |
+| 対処 | **Postgres 関数（RPC）1回の呼び出しに閉じる** |
+| 設計判断 | §5.1 |
 
 ```mermaid
 sequenceDiagram
@@ -136,13 +158,9 @@ flowchart TD
 
 引数名・列名は snake_case（DB列名と一致・`../06_DB設計規約.md §5`）。
 
-呼び出しは3種類。いずれも `supabase_flutter` が保持済み JWT を自動付与する（§2.1）。`user_id` は**引数で渡さない**。サーバ側が JWT から解決する。
-
-| 遷移 | 操作 | 方式 | 名前 |
-|---|---|---|---|
-| T01 | セッション＋明細の登録 | RPC | `create_training_session` |
-| T02 | 実行済トグル | PostgREST update | `training_session_details` |
-| — | 入館記録 | PostgREST insert | `gym_visits` |
+- 呼び出しは3種類。方式と呼び出し先の一覧は §1 の表を参照。
+- いずれも `supabase_flutter` が保持済み JWT を自動付与する（§2.1）。
+- `user_id` は**引数で渡さない**。サーバ側が JWT から解決する。
 
 ### 3.1 RPC `create_training_session`（T01）
 
@@ -186,7 +204,13 @@ final rows = await supabase
     .select('id, is_done');      // 返却0行のときだけ §4.2 の存在確認へ
 ```
 
-> ⚠️ 要確認（人間判断）: T02 の更新方式が `../../30_データ・IF設計/02_API設計.md §3` に無い。PostgREST の直接 update（本書の `[仮]` 案）にするか、`create_training_session` の再送（`uq_tsd_session_menu` を使った upsert）に吸収するかを確定し、段3の契約へ反映する必要がある。
+> ⚠️ 要確認（人間判断）: T02 の更新方式が段3の API 契約に無い。次の2案から確定する。
+>
+> | 項目 | 内容 |
+> |---|---|
+> | 案A（本書の `[仮]`） | PostgREST の直接 update |
+> | 案B | `create_training_session` の再送に吸収（`uq_tsd_session_menu` を使った upsert） |
+> | 反映先 | `../../30_データ・IF設計/02_API設計.md §3` |
 
 ### 3.3 入館記録 — `gym_visits` の insert
 
@@ -206,16 +230,18 @@ await supabase.from('gym_visits').insert({
 
 ### 3.4 バリデーション規則
 
-| 項目 | 規則 | 検証場所 | 違反時 |
-|---|---|---|---|
-| `p_performed_date` / `visit_date` | 必須・ISO 8601 date・未来日不可 | Flutter | ERR-TRAINING-001 / ERR-TRAINING-008 |
-| `p_menu_ids` | 必須・1件以上 | Flutter | ERR-TRAINING-002 |
-| `p_menu_ids` の要素 | 正の整数。**同一呼び出し内で重複不可**（`uq_tsd_session_menu` と整合） | Flutter＋DB制約 | ERR-TRAINING-002 |
-| `p_menu_ids` の所有 | 本人の `training_menus` に実在（RLSで不可視な行は「存在しない」と同義） | RPC 内（RLS下） | ERR-TRAINING-003 |
-| `p_is_done` | boolean[]・`p_menu_ids` と同順同数・既定 false（ST-01） | Flutter | ERR-VALIDATION-001 |
-| `is_done`（T02） | `true` のみ受理（許可遷移 T02） | Flutter | ERR-TRAINING-006 |
-| `gym_id` | 必須・`gyms` に実在 | DB制約（FK） | ERR-TRAINING-007 |
-| `visit_time` | 任意・`HH:MM` または `HH:MM:SS` | Flutter | ERR-TRAINING-008 |
+| 対象操作 | 項目 | 規則 | 検証場所 | 違反時 |
+|---|---|---|---|---|
+| T01 | `p_performed_date` | 必須・ISO 8601 date・未来日不可 | Flutter | ERR-TRAINING-001 |
+| T01 | `p_menu_ids` | 必須・1件以上 | Flutter | ERR-TRAINING-002 |
+| T01 | `p_menu_ids` の要素 | 正の整数 | Flutter | ERR-TRAINING-002 |
+| T01 | `p_menu_ids` の要素 | **同一呼び出し内で重複不可**（`uq_tsd_session_menu` と整合） | Flutter＋DB制約 | ERR-TRAINING-002 |
+| T01 | `p_menu_ids` の所有 | 本人の `training_menus` に実在（RLSで不可視な行は「存在しない」と同義） | RPC 内（RLS下） | ERR-TRAINING-003 |
+| T01 | `p_is_done` | boolean[]・`p_menu_ids` と同順同数・既定 false（ST-01） | Flutter | ERR-VALIDATION-001 |
+| T02 | `is_done` | `true` のみ受理（許可遷移 T02） | Flutter | ERR-TRAINING-006 |
+| 入館 | `gym_id` | 必須・`gyms` に実在 | DB制約（FK） | ERR-TRAINING-007 |
+| 入館 | `visit_date` | 必須・ISO 8601 date・未来日不可 | Flutter | ERR-TRAINING-008 |
+| 入館 | `visit_time` | 任意・`HH:MM` または `HH:MM:SS` | Flutter | ERR-TRAINING-008 |
 
 ## 4. 業務ロジック
 
@@ -270,12 +296,27 @@ await supabase.from('gym_visits').insert({
 
 ### 5.1 トランザクション実行手段の設計判断
 
-| 案 | 内容 | 評価 |
-|---|---|---|
-| A. Postgres 関数（RPC）`[仮]`**採用** | `create_training_session()` を `supabase.rpc()` で1回呼ぶ。関数本体は暗黙の単一トランザクション。例外時は全ロールバック | セッションだけ残る中途半端な行が原理的に発生しない。往復1回で NFR-PERF-02 に有利 |
-| B. PostgREST を2回呼ぶ | `insert(training_sessions)` → `insert(training_session_details)` | PostgREST はリクエスト単位でしかトランザクションを張れない。**2回目が失敗すると明細0件のセッションが残る**。補償削除も失敗しうる。不採用 |
+**採用は案A**（Postgres 関数＝RPC）`[仮]`。
 
-> ⚠️ 要確認（人間判断）: 案Aの Postgres 関数は `../01_DB物理設計.md` に無いDBオブジェクト。関数の追加（マイグレーション管理・`SECURITY INVOKER` でRLSを維持する方針）を物理設計の正本へ反映してよいか確定が必要。案Bを採る場合は「明細0件セッション」の許容とクリーンアップ方針を決める必要がある。
+| 案 | 呼び出し方 |
+|---|---|
+| **A（採用）** | `create_training_session()` を `supabase.rpc()` で1回呼ぶ |
+| B（不採用） | `insert(training_sessions)` → `insert(training_session_details)` の2回 |
+
+| 観点 | 案A | 案B |
+|---|---|---|
+| トランザクション | 関数本体が暗黙の1単位。例外時は全ロールバック | PostgREST はリクエスト単位でしか張れない |
+| 失敗時 | セッションだけ残る中途半端な行が原理的に発生しない | 2回目が失敗すると明細0件のセッションが残る |
+| 補償 | 不要 | 補償削除が要る。その削除も失敗しうる |
+| 往復 | 1回。NFR-PERF-02 に有利 | 2回 |
+
+> ⚠️ 要確認（人間判断）: 案Aの Postgres 関数は `../01_DB物理設計.md` に無いDBオブジェクト。確定が要るのは次の3点。
+>
+> | # | 確定が要ること |
+> |---|---|
+> | 1 | 関数の追加を物理設計の正本へ反映してよいか |
+> | 2 | 反映するなら、マイグレーション管理と `SECURITY INVOKER` でのRLS維持の方針 |
+> | 3 | 案Bを採る場合、「明細0件セッション」の許容とクリーンアップ方針 |
 
 ### 5.2 SQL相当
 
@@ -323,14 +364,54 @@ INSERT INTO gym_visits (user_id, gym_id, visit_date, visit_time)
 VALUES ($1, $2, $3, $4) RETURNING id;
 ```
 
-| 観点 | 内容 |
-|---|---|
-| 対象テーブル | `training_sessions`（INSERT/SELECT）・`training_session_details`（INSERT/UPDATE/SELECT）・`training_menus`（SELECT・所有者検証）・`gym_visits`（INSERT）・`gyms`（FK参照） |
-| 使用INDEX | `ix_train_sessions_user_date`（同日確認・SCR-03の当日分再表示・FEAT-05集計）／`uq_tsd_session_menu`（明細重複拒否。先頭列が `session_id` のため明細のセッション単位取得にも効く＝専用INDEXの追加は不要）／`ix_gym_visits_user_date`（入館の日次参照） |
-| RLS | `user_id = auth.uid()` 相当で本人行のみ。`training_session_details` は `user_id` を持たないため、`session_id` 経由で親 `training_sessions` の所有を確認するポリシーが要る（`../01_DB物理設計.md` の RLS 方針に従う） |
-| トランザクション境界 | **T01＝RPC 1回＝1トランザクション**（`training_sessions` INSERT → `training_session_details` 一括 INSERT）。T02＝条件付き update 1文で完結（明示トランザクション不要）。入館記録は INSERT 1文で完結し、T01 とは**別トランザクション**（片方の失敗が他方を巻き戻さない） |
+### 5.3 対象テーブル・INDEX・RLS
 
-> ⚠️ 要確認（人間判断）: SQL中の `current_app_user_id()` は「`users.id`(bigint) と `auth.uid()`(uuid) の紐付け」に依存する仮の呼称。方式の正本は `../06_DB設計規約.md` で、本機能では方式を決めない。あわせて、PostgREST 直接 insert となる `gym_visits.user_id` を「列 DEFAULT で埋める」か「RLS の WITH CHECK 前提でクライアントが渡す」かも同時に決める必要がある。
+**対象テーブル**
+
+| テーブル | 操作 |
+|---|---|
+| `training_sessions` | INSERT / SELECT |
+| `training_session_details` | INSERT / UPDATE / SELECT |
+| `training_menus` | SELECT（所有者検証） |
+| `gym_visits` | INSERT |
+| `gyms` | FK 参照 |
+
+**使用INDEX**
+
+| INDEX | 用途 |
+|---|---|
+| `ix_train_sessions_user_date` | 同日確認・SCR-03 の当日分再表示・FEAT-05 の集計 |
+| `uq_tsd_session_menu` | 明細の重複拒否。先頭列が `session_id` のため明細取得にも効く |
+| `ix_gym_visits_user_date` | 入館の日次参照 |
+
+明細取得のための専用INDEXは追加しない。`uq_tsd_session_menu` で足りる。
+
+**RLS**
+
+| 対象 | ポリシー |
+|---|---|
+| `training_sessions` / `gym_visits` | `user_id = auth.uid()` 相当で本人行のみ |
+| `training_session_details` | `user_id` 列を持たない。`session_id` 経由で親の所有を確認する |
+
+RLS 方針の正本は `../01_DB物理設計.md`。
+
+**トランザクション境界**
+
+| 操作 | 境界 |
+|---|---|
+| T01 | **RPC 1回＝1トランザクション**（`training_sessions` INSERT → 明細一括 INSERT） |
+| T02 | 条件付き update 1文で完結。明示トランザクション不要 |
+| 入館記録 | INSERT 1文で完結。T01 とは**別トランザクション** |
+
+入館記録の失敗は T01 を巻き戻さない。逆も同じ。
+
+> ⚠️ 要確認（人間判断）: SQL 中の `current_app_user_id()` に関わる未確定が3件ある。本機能では方式を決めない。
+>
+> | # | 未確定事項 | 正本 |
+> |---|---|---|
+> | 1 | `current_app_user_id()` は仮の呼称 | `../06_DB設計規約.md` |
+> | 2 | 実体は `users.id`(bigint) と `auth.uid()`(uuid) の紐付け方式 | 同上 |
+> | 3 | `gym_visits.user_id` の埋め方（列 DEFAULT ／ クライアント送信＋RLS の WITH CHECK） | 同上 |
 
 ## 6. エラー処理
 
@@ -369,7 +450,16 @@ Supabase の Dart クライアントは失敗時に `PostgrestException` を投�
 
 > ERRの完全列挙の正本は `../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`（段6で集約）。本表はその入力とする。
 
-> ⚠️ 要確認（人間判断）: ERR-TRAINING-005 は §10-2（同一日に複数セッションを許すか）の決着に依存する暫定定義。許容する結論なら本エラーは削除する。また `training_sessions` に日付のUNIQUE制約が無いため、重複検知はクライアント側チェックでしか実現できず、同時実行時の重複挿入は防げない。
+### 6.3 未決事項
+
+> ⚠️ 要確認（人間判断）: ERR-TRAINING-005 は §10-2 の決着に依存する暫定定義。内訳は次のとおり。
+>
+> | # | 内容 |
+> |---|---|
+> | 1 | 同一日に複数セッションを許す結論なら、本エラーは削除する |
+> | 2 | `training_sessions` に日付のUNIQUE制約が無い |
+> | 3 | そのため重複検知はクライアント側チェックでしか実現できない |
+> | 4 | 同時実行時の重複挿入は防げない |
 
 ## 7. 画面挙動・状態別表示
 
@@ -377,15 +467,18 @@ Supabase の Dart クライアントは失敗時に `PostgrestException` を投�
 
 | 状態 | 表示 | 操作可否 |
 |---|---|---|
-| 初期/空（当日の記録なし） | 実施日入力（既定=当日）＋部位別の種目 `CheckboxListTile` 一覧。種目が0件なら `MaterialBanner` で SCR-02 の種目登録へ誘導 | [記録する] は種目未選択のとき `onPressed: null` |
+| 初期/空（当日の記録なし） | 実施日入力（既定=当日）＋部位別の種目 `CheckboxListTile` 一覧 | [記録する] は種目未選択のとき `onPressed: null` |
+| 初期/空（種目が0件） | `MaterialBanner` で SCR-02 の種目登録へ誘導 | [記録する] は押せない |
 | 読込中（種目一覧の取得） | `shimmer` のプレースホルダを種目リストの行数分 | 全操作不可 |
 | 送信中 | ボタンを `CircularProgressIndicator` に差し替え＋`Checkbox` を無効化 | 二重送信不可（クライアント側のガード。サーバ側の担保は §4.2） |
-| 成功（T01） | `ScaffoldMessenger.showSnackBar`「記録しました」。登録済み明細を `Checkbox` の実行済み状態で再描画 | 明細のチェック（T02）が可能になる |
+| 成功（T01） | `ScaffoldMessenger.showSnackBar`「記録しました」。登録済み明細を実行済み状態で再描画 | 明細のチェック（T02）が可能になる |
 | 成功（T02） | 対象 `Checkbox` のみ即時に実行済み表示（楽観更新）＋成功 `SnackBar` | 同一明細の再チェックは無反応（冪等成功） |
-| エラー | `SnackBar`（`backgroundColor` を警告色）にERRのメッセージ。入力値は保持し、再送できる状態を維持 | 再操作可 |
-| 入館記録 | `showModalBottomSheet` 内に `DropdownButtonFormField`（ジム）＋日付・時刻入力＋[記録する] | `gyms` が0件のとき候補が空になるため、ジム登録への導線をシート内に出す（§10-5） |
+| エラー | `SnackBar`（`backgroundColor` を警告色）にERRのメッセージ。入力値は保持する | 再操作可 |
+| 入館記録 | `showModalBottomSheet` にジム選択（`DropdownButtonFormField`）＋日付・時刻＋[記録する] | 操作可 |
+| 入館記録（`gyms` が0件） | 候補が空になる。ジム登録への導線をシート内に出す（§10-5） | 導線のみ |
 
-- 実施日・入館日時の入力は `showDatePicker` / `showTimePicker` を使う。手入力の書式ゆれを避けるため `TextFormField` の直接入力は採らない。
+- 実施日・入館日時の入力は `showDatePicker` / `showTimePicker` を使う。
+- 手入力の書式ゆれを避けるため `TextFormField` の直接入力は採らない。
 - T02 のトグルは楽観更新とする。失敗時にチェック状態を元へ戻す。
 - 決定的処理のため応答は ≤1秒（NFR-PERF-02）を前提にスピナーは出さない。
 
@@ -404,6 +497,8 @@ Supabase の Dart クライアントは失敗時に `PostgrestException` を投�
 
 ## 9. テスト観点
 
+### 9.1 テストケース
+
 | TC-ID | 観点 | 期待 |
 |---|---|---|
 | TC-FEAT04-01 | 実施日＋明細1件以上で RPC 呼び出し | `training_sessions` 1行と `training_session_details` n行が同時に存在（T01・ST-01） |
@@ -421,7 +516,8 @@ Supabase の Dart クライアントは失敗時に `PostgrestException` を投�
 | TC-FEAT04-13 | 入館記録の失敗がトレーニング記録に影響しないこと | `training_sessions` の行は保持される（別トランザクション） |
 | TC-FEAT04-14 | 明細20件の RPC 応答時間 | ≤1秒（NFR-PERF-02） |
 
-受入基準（G/W/T）の候補:
+### 9.2 受入基準（G/W/T）の候補
+
 - [AC] Given 本人の種目が登録済み When 実施日と種目を選んで[記録する]を押す Then セッションと明細が同時に保存され、明細は ST-01 になる
 - [AC] Given 明細の一括保存が失敗する状況 When 記録を送信する Then セッションも明細も保存されず、エラーが通知される
 - [AC] Given ST-01 の明細 When 実行済にチェックする Then ST-02 へ遷移し、ダッシュボードの実施有無に反映される
@@ -434,20 +530,35 @@ Supabase の Dart クライアントは失敗時に `PostgrestException` を投�
 
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | **回数・重量を保存できない** | FEAT-04 の概要（REQ-03）は「トレーニング記録（回数・重量・メニュー）」。しかし `training_session_details` は `session_id`/`menu_id`/`is_done` のみで、**回数（reps/sets）・重量（kg）を保存する列が無い**。現物理設計のままでは要件の一部が実装不能。本書の RPC も `is_done` しか受け取れない。列は勝手に追加せず指摘に留める | 🔴 高 |
-| 2 | 同一日に複数セッションを作れる | `training_sessions` に `(user_id, performed_date)` のUNIQUEが無い。同じ日に複数セッションが作れる。FEAT-05 のヒートマップは「実施有無」の2値なので日単位の集計は壊れない。ただし種目名ツールチップが複数セッションにまたがって重複表示されうる。「1日1セッション」なら UNIQUE 制約、「1日複数可」なら §6 の ERR-TRAINING-005 を削除、と結論で設計が分岐する | 🟡 中 |
-| 3 | ST-02→ST-01 の逆遷移が未定義 | `../../30_データ・IF設計/03_ドメインイベント.md §3` は T02 の逆方向を持たない。一方 SCR-03 の `Checkbox` は「誤ってチェックした場合に外す」操作を利用者に期待させる。本書は逆遷移を実装せず ERR-TRAINING-006 とした `[仮]`。UX上は取り消し不可が受け入れられるか要確認。許すなら遷移ID（T03相当）をドメインイベントの正本に追加する必要がある | 🟡 中 |
-| 4 | ヒートマップの実施有無の集計元が2説ある | `../../30_データ・IF設計/02_API設計.md §3` は入館記録（`gym_visits`）を「ヒートマップの実施有無元」と書く。一方、同 §4.3 と `../../40_機能設計/01_シーケンス設計.md §3` は `training_sessions`/`details` から集計すると書く。`../../10_システム基本設計/01_構成要素.md` は入館を補助扱い。**入館だけした日／記録だけした日**の表示が食い違う。FEAT-05 の実装前に一方へ確定が必要 | 🟡 中 |
-| 5 | `gyms` 未登録だと入館記録ができない | `gym_visits.gym_id` は NOT NULL FK。`gyms` が0件の初回利用時は入館記録が一切できない。SCR-03 からジム登録（FEAT-01 の `gyms` 登録）へ遷移する導線か、初回のジム登録を促す初期設定フロー（FEAT-06）が必要 | 🟡 中 |
-| 6 | T01 の「`not_done` で登録」と上位仕様の食い違い | ドメインイベント T01 は「明細を `not_done` で登録」と定義する。一方 `../../30_データ・IF設計/02_API設計.md §3` の記録操作は「実施日＋明細=種目×**実行済**」で、作成時に `is_done=true` を受け取れる読み方になる。本書は「既定 false・`true` 指定時は同一トランザクション内で T01→T02 が連続したものとみなす」`[仮]` とした。状態機械の正本の記述とは厳密に一致しない | 🟡 中 |
-| 7 | T02 の更新方式が API 正本に無い | §3.2 の PostgREST 直接 update は `../../30_データ・IF設計/02_API設計.md §3` の一覧に無い。段3の契約は旧構成のHTTPエンドポイント一覧のままで、PostgREST 直接更新の記述を持たない。直接 update にするか `create_training_session` の upsert に吸収するかで、状態ガードの書き方（条件付き update か `ON CONFLICT DO UPDATE` か）も変わる | 🟡 中 |
-| 8 | 記録の訂正・削除手段が無い | セッション・明細の delete／種目の差し替え手段が定義されていない。誤登録した日のデータを利用者が消せず、ヒートマップに残り続ける。MVPの範囲外とするか要確認 | 🟢 低 |
-| 9 | RPC 追加が物理設計の正本に無い | §5.1 で採用した Postgres 関数は `../01_DB物理設計.md` に記載が無いDBオブジェクト。RLS（`SECURITY INVOKER`）とマイグレーション管理の方針も未定。加えて `users.id`(bigint) と `auth.uid()`(uuid) の紐付け未確定（正本＝`../06_DB設計規約.md`）が解決するまで、関数内の `user_id` 解決は確定できない | 🟡 中 |
+| 1 | **回数・重量を保存できない** | 要件（REQ-03）は回数・重量・メニューの記録を求める。しかし `training_session_details` は `is_done` のみ。**列が無く要件の一部が実装不能**（本書の RPC も `is_done` しか受け取れない） | 🔴 高 |
+| 2 | 同一日に複数セッションを作れる | 同日のUNIQUE制約が `training_sessions` に無い。日単位の集計は2値なので壊れないが、種目名ツールチップが重複表示されうる。結論は「1日1セッション＝UNIQUE制約」か「1日複数可＝ERR-TRAINING-005 を削除（§6）」に分岐 | 🟡 中 |
+| 3 | ST-02→ST-01 の逆遷移が未定義 | SCR-03 の `Checkbox` は取り消し操作を期待させる。しかし許可遷移（§4.1）に T02 の逆方向が無い。本書は実装せず ERR-TRAINING-006 とした `[仮]`（許すなら遷移ID T03相当を正本へ追加／UX上の可否も要確認） | 🟡 中 |
+| 4 | ヒートマップの実施有無の集計元が2説ある | 集計元の記述が3か所で食い違う。**入館だけした日／記録だけした日**の表示が変わるため FEAT-05 の実装前に確定が要る。内訳＝段3 §3＝`gym_visits`／同 §4.3・シーケンス設計 §3＝sessions/details／構成要素＝入館は補助 | 🟡 中 |
+| 5 | `gyms` 未登録だと入館記録ができない | `gym_visits.gym_id` は NOT NULL FK。`gyms` が0件の初回利用時は入館記録が一切できない。SCR-03 からジム登録（FEAT-01）への導線か、初回のジム登録を促す初期設定フロー（FEAT-06）が要る | 🟡 中 |
+| 6 | T01 の「`not_done` で登録」と上位仕様の食い違い | T01 は明細を `not_done` で登録すると定義する（§4.1）。一方 段3 §3 は「種目×**実行済**」で `is_done=true` を作成時に受け取れる読み方。本書は「既定 false／`true` は1トランザクション内の T01→T02」`[仮]`（状態機械の正本と一致しない） | 🟡 中 |
+| 7 | T02 の更新方式が API 正本に無い | §3.2 の PostgREST 直接 update が段3 §3 の一覧に無い（段3は旧構成のHTTPエンドポイント一覧のまま）。直接 update か upsert 吸収かで、状態ガードが条件付き update か `ON CONFLICT DO UPDATE` かに分かれる | 🟡 中 |
+| 8 | 記録の訂正・削除手段が無い | セッション・明細の delete／種目の差し替え手段が未定義。誤登録した日のデータを利用者が消せず、ヒートマップに残り続ける。MVPの範囲外とするか要確認 | 🟢 低 |
+| 9 | RPC 追加が物理設計の正本に無い | §5.1 の Postgres 関数は `../01_DB物理設計.md` に記載が無い。RLS（`SECURITY INVOKER`）とマイグレーション管理の方針も未定。`users.id` と `auth.uid()` の紐付け（§5.3）が決まるまで `user_id` 解決も確定できない | 🟡 中 |
 
-> ⚠️ 要確認（人間判断）: #1 は要件（回数・重量の記録）と物理設計（`is_done` boolean のみ）の乖離であり、FEAT-04 の実装可否そのものに関わる。(a) 要件側を「実施有無のみ」に縮退させる、(b) `training_session_details` に回数・重量の列を追加する、のどちらかを岡田さんの判断で確定してほしい。(b) を採る場合は `../01_DB物理設計.md §2.3` と `../../30_データ・IF設計/01_データモデル.md` の改訂が先行する。
+> ⚠️ 要確認（人間判断）: #1 は要件（回数・重量の記録）と物理設計（`is_done` boolean のみ）の乖離。
+> FEAT-04 の実装可否そのものに関わるため、次のどちらかを岡田さんの判断で確定してほしい。
+> (a) 要件側を「実施有無のみ」に縮退させる。
+> (b) `training_session_details` に回数・重量の列を追加する。
+> (b) を採る場合は `../01_DB物理設計.md §2.3` と `../../30_データ・IF設計/01_データモデル.md` の改訂が先行する。
 
-> ⚠️ 要確認（人間判断）: #2 #3 #4 #6 #7 は、いずれも `../../30_データ・IF設計/03_ドメインイベント.md` または `../../30_データ・IF設計/02_API設計.md` の正本側を改訂しないと本書の `[仮]` を確定にできない。特に #4 は FEAT-05 の集計仕様と直結するため、FEAT-04/FEAT-05 の詳細設計をまたいで1つの結論に揃える必要がある。
+> ⚠️ 要確認（人間判断）: #2 #3 #4 #6 #7 は正本側の改訂なしに本書の `[仮]` を確定にできない。
+> 改訂先は `../../30_データ・IF設計/03_ドメインイベント.md` または `../../30_データ・IF設計/02_API設計.md`。
+> 特に #4 は FEAT-05 の集計仕様と直結する。FEAT-04/FEAT-05 をまたいで1つの結論に揃える必要がある。
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）・`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。FEAT-04 では、旧 `POST /api/training-sessions` は RPC `create_training_session` に、旧 `PATCH /api/training-sessions/{session_id}/details/{detail_id}` は `training_session_details` の PostgREST update に、旧 `POST /api/gym-visits` は `gym_visits` の PostgREST insert に置き換わる。段3の契約表の改訂が要る。
+> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
+> 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
+> `30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。後継ADRの起票と段3の改訂が必要。
+> FEAT-04 での置き換えは次のとおり。段3の契約表の改訂が要る。
+>
+> | 旧エンドポイント | 置き換え先 |
+> |---|---|
+> | `POST /api/training-sessions` | RPC `create_training_session` |
+> | `PATCH /api/training-sessions/{session_id}/details/{detail_id}` | `training_session_details` の PostgREST update |
+> | `POST /api/gym-visits` | `gym_visits` の PostgREST insert |
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

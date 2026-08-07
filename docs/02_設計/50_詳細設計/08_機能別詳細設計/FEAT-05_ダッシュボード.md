@@ -31,7 +31,7 @@ status: draft
 | 関連ルール | RULE-001（必要量＝体重×2g。**算出ロジックの正本は FEAT-07**、本書では再定義せず共有関数を呼ぶ） |
 | 外部連携 | なし（AI不使用。決定的なDB集計のみ） |
 | 性能目標 | NFR-PERF-01（初期表示 ≤2秒）／NFR-PERF-02（決定的処理 ≤1秒） |
-| 状態 | 本機能は状態を持たない（参照系）。ただし ST-01 `not_done` / ST-02 `done`（`training_session_details.is_done`）を**集計対象として読む** |
+| 状態 | 本機能は状態を持たない（参照系）。ただし ST-01 `not_done` / ST-02 `done` を**集計対象として読む** |
 | 優先度 | MUST |
 
 SCR-01 を開いた時点で、当日のタンパク質達成状況と選択期間のトレーニング実施状況を表示する。取得は RPC 1回。
@@ -42,9 +42,10 @@ SCR-01 を開いた時点で、当日のタンパク質達成状況と選択期�
 | 集計場所 | すべて RPC 内の SQL。Flutter 側で再集計しない |
 | 期間切替 | 同じ RPC を `p_period` を変えて呼び直す。表示範囲だけが変わる |
 | `period` の意味 | 「表示範囲」のみ。保持範囲ではない（全履歴保持・`../../30_データ・IF設計/01_データモデル.md §7`） |
-| 例外 | `target_g` と `rate_pct` だけは Flutter 側で算出する。RULE-001 の正本が FEAT-07 のため（§10-12） |
+| 例外 | `target_g` と `rate_pct` だけは Flutter 側で算出する。理由は §10-12 |
 
-旧構成の `GET /api/dashboard?period=` は廃止する。段3（`../../30_データ・IF設計/02_API設計.md §4.3`）の契約表は RPC 契約への改訂が要る。
+- 旧構成の `GET /api/dashboard?period=` は廃止する。
+- 段3（`../../30_データ・IF設計/02_API設計.md §4.3`）の契約表は RPC 契約への改訂が要る。
 
 ## 2. 処理フロー
 
@@ -90,8 +91,8 @@ sequenceDiagram
 ```
 
 - 往復は**常に1回**。Q1・Q2 は RPC の中で連続実行される。
-- クエリは**常に2本以内**（Q1・Q2）。日数やヒートマップのセル数に比例してクエリが増えない（N+1回避は本書 §5）。
-- 本人行が無い時点で `raise exception` するため、Q1・Q2 とも発行されない（無駄な集計を打ち切る）。
+- クエリは**常に2本以内**（Q1・Q2）。日数やセル数に比例してクエリが増えない（N+1回避は §5）。
+- 本人行が無い時点で `raise exception` する。Q1・Q2 とも発行されない（無駄な集計を打ち切る）。
 
 ## 3. 入出力仕様
 
@@ -116,7 +117,8 @@ sequenceDiagram
 | `p_range_start` | `date` | 案A のみ必須 | 表示範囲の開始日（閉区間） |
 | `p_range_end` | `date` | 案A のみ必須 | 表示範囲の終了日（閉区間） |
 
-案B（RPC 内でTZ固定）を採る場合、`p_today` / `p_range_start` / `p_range_end` は引数から外す。関数内で `p_period` から導出する。二択は §5.1・§10-1。
+- 案B（RPC 内でTZ固定）を採る場合、`p_today` / `p_range_start` / `p_range_end` は引数から外す。
+- 案B では関数内で `p_period` から範囲を導出する。二択の比較は §5.1、確定は §10-1。
 
 ```dart
 // 案A の呼び出し例
@@ -150,14 +152,16 @@ final json = await supabase.rpc('get_dashboard', params: {
 
 | フィールド | 由来 |
 |---|---|
-| `protein_gauge.target_g` | `weight_kg` を FEAT-07 の Dart 関数（RULE-001）に渡して算出。`weight_kg` が null なら null |
+| `protein_gauge.target_g` | `weight_kg` を FEAT-07 の Dart 関数（RULE-001）に渡して算出。null なら null |
 | `protein_gauge.intake_g` | RPC の値をそのまま使う |
 | `protein_gauge.rate_pct` | `calcGaugeRatePct`（L3・L4）で算出。`target_g` が null なら null |
 | `heatmap[]` | RPC の値をそのまま使う |
 
 - `target_g` / `rate_pct` を SQL で計算しない。RULE-001 を SQL に複製しないため（§10-12）。
-- `heatmap` は**実施記録のある日だけ**を返す（未実施日は要素を返さない）。未実施セルは Flutter が範囲から補完する。
-- 表示範囲（`range_start`〜`range_end`）は戻り値に含めない。案A では Flutter が自分の渡した値を使う。案B では Flutter 側で再計算になる（§10-8 の論点）。
+- `heatmap` は**実施記録のある日だけ**を返す（未実施日は要素を返さない）。
+- 未実施セルは Flutter が表示範囲から補完する。
+- 表示範囲（`range_start`〜`range_end`）は戻り値に含めない。
+- 案A では Flutter が自分の渡した値を使う。案B では Flutter 側で再計算になる（§10-8）。
 
 ### エラー時の戻り
 
@@ -167,35 +171,37 @@ final json = await supabase.rpc('get_dashboard', params: {
 ```
 
 - 旧構成の共通エラー契約 `{ error_code, message, retryable }` とは形が違う。
-- Flutter 側で `PostgrestException` を捕まえ、共通のエラーモデルへ変換する（変換規則の正本＝`../07_実装共通設計パターン.md`）。
+- Flutter 側で `PostgrestException` を捕まえ、共通のエラーモデルへ変換する。
+- 変換規則の正本は `../07_実装共通設計パターン.md`。
 
 ### 3.1 バリデーション規則
 
 | 項目 | 規則 | 違反時 |
 |---|---|---|
 | `p_period` | 省略可。指定時は `day` / `week` / `month` のいずれか | ERR-DASHBOARD-001 (400) |
-| `p_period` 未指定 | 既定値 `month` を適用（関数の `default`）。バリデーションエラーにしない | — |
-| `p_range_start` / `p_range_end`（案A） | `date` として解釈でき、`range_start <= range_end` であること | ERR-DASHBOARD-001 (400)（[仮]） |
-| 未知の引数 | 関数シグネチャに無い引数は PostgREST が弾く。Flutter 側から送らない | — |
+| `p_period` 未指定 | 既定値 `month` を適用（関数の `default`）。エラーにしない | — |
+| `p_range_start` / `p_range_end`（案A） | `date` として解釈できること | ERR-DASHBOARD-001 (400)（[仮]） |
+| `p_range_start` / `p_range_end`（案A） | `range_start <= range_end` であること | ERR-DASHBOARD-001 (400) |
+| 未知の引数 | 関数シグネチャに無い引数は PostgREST が弾く。Flutter から送らない | — |
 | 認証セッション | JWT が有効であること | ERR-AUTH-001 (401) |
 | プロフィール存在 | `users` に本人行が存在すること | ERR-DASHBOARD-002 (409) |
-| `users.weight_kg` | NULL 可。NULL の場合はエラーにせず `weight_kg: null` で返す（[仮]） | — |
+| `users.weight_kg` | NULL 可。NULL でもエラーにせず `weight_kg: null` で返す（[仮]） | — |
 
 - Flutter 側は `Period` enum で値域を保証する。RPC 側でも同じ検証を行う（二重）。
-- 二重にする理由: RPC は Flutter 以外のクライアントからも呼べるため。検証をクライアントに委ねない。
+- 二重にする理由は、RPC が Flutter 以外のクライアントからも呼べるため。検証をクライアントに委ねない。
 - Dart には zod が無い。戻り値の検証はモデルクラスの `fromJson` で行う。
 
 ## 4. 業務ロジック
 
 | # | ロジック | 定義 | 対応 |
 |---|---|---|---|
-| L1 | 目標タンパク質量 `target_g` | RULE-001（体重×2g）。**算出の正本は FEAT-07** の Dart 純関数（`app/lib/domain/nutrition.dart`）を呼ぶ。本書・本機能では再実装しない | RULE-001 / FEAT-07 |
-| L2 | 当日摂取量 `intake_g` | 当日（`eaten_date = p_today`）の `meal_logs.protein_g` の合計。行が無い場合は 0 | DM-08 |
-| L3 | 達成率 `rate_pct` | `min(100, intake_g / target_g * 100)` を小数第1位に丸める。**100%で頭打ち**（ADR-0002） | ADR-0002 |
-| L4 | 0除算・未設定ガード | `target_g` が `null` または `0` 以下のとき `rate_pct` は `null`（除算を行わない） | §10-4 |
-| L5 | 日付範囲 `resolveDateRange` | `day`＝当日のみ／`week`＝当日を含む週の月曜〜日曜／`month`＝当月1日〜末日（[仮]）。**解決する場所は案A/案B の二択**（§5.1） | §10-1 / §10-8 |
-| L6 | 実施有無 `done` | その日の `training_session_details.is_done` が **1件以上 true**（＝ST-02 到達）なら `true`。セッション行だけあり明細が全て ST-01／明細0件の日は `false`（[仮]） | ST-01 / ST-02 / §10-3 |
-| L7 | 種目名 `menu_names` | `done=true` の明細に対応する `training_menus.name` を重複排除し名前昇順で返す。`done=false` の日は空配列 | §10-3 |
+| L1 | 目標タンパク質量 `target_g` | RULE-001（体重×2g）。**算出の正本は FEAT-07** の Dart 純関数を呼ぶ。本機能では再実装しない | RULE-001 / FEAT-07 |
+| L2 | 当日摂取量 `intake_g` | 当日（`eaten_date = p_today`）の `meal_logs.protein_g` の合計。行が無ければ 0 | DM-08 |
+| L3 | 達成率 `rate_pct` | `min(100, intake_g / target_g * 100)` を小数第1位に丸める。**100%で頭打ち** | ADR-0002 |
+| L4 | 0除算・未設定ガード | `target_g` が `null` または `0` 以下なら `rate_pct` は `null`（除算しない） | §10-4 |
+| L5 | 日付範囲 `resolveDateRange` | `day`＝当日のみ／`week`＝当日を含む週の月曜〜日曜／`month`＝当月1日〜末日（[仮]）。**解決する場所は案A／案B の二択**（比較は §5.1） | §10-1 / §10-8 |
+| L6 | 実施有無 `done` | その日の `is_done` が **1件以上 true**（＝ST-02 到達）なら `true`。明細が全て ST-01 の日／明細0件の日は `false`（[仮]） | ST-01 / ST-02 / §10-3 |
+| L7 | 種目名 `menu_names` | `done=true` の明細の `training_menus.name` を重複排除し名前昇順で返す。`done=false` の日は空配列 | §10-3 |
 
 実行場所の割り当て:
 
@@ -221,27 +227,45 @@ resolveDateRange(period, now, timeZone):                    # L5・案A のみ
 ```
 
 - `intake_g` は `protein_g` の単純合計とする。`meal_logs.intake_count`（摂取数）は**乗じない**。
-- 理由: `intake_count` の業務的意味が未確定（`../../30_データ・IF設計/01_データモデル.md §8-6`）。FEAT-08/FEAT-09 と扱いを揃える（§10-9）。
+- 理由は `intake_count` の業務的意味が未確定なため（`../../30_データ・IF設計/01_データモデル.md §8-6`）。
+- FEAT-08/FEAT-09 と扱いを揃える（§10-9）。
 - AI（EXT-01）は使用しない。全てDB集計の決定的処理（NFR-PERF-02）。
 
 ## 5. データアクセス
 
+構成は3段。**Q1 と Q2 を1つの RPC にまとめ、往復を1回にする**。
+
+| 段 | 節 | 内容 |
+|---|---|---|
+| 前提 | §5.1 | 日付範囲とタイムゾーンの決め方（案A／案B） |
+| Q1 | §5.2 | タンパク質ゲージ（当日 SUM） |
+| Q2 | §5.3 | ヒートマップ（期間集約・N+1回避） |
+| まとめ | §5.4 | RPC `get_dashboard` が Q1・Q2 を1本にする |
+| 付帯 | §5.5 | 対象テーブル・INDEX・RLS・トランザクション境界 |
+
 ### 5.1 日付範囲とタイムゾーンの決め方
+
+**タイムゾーンの二択は本節だけで扱う。** §3・§4 L5・§5.4・§10-1・§10-8 は本節を参照する。
 
 旧構成は「サーバ（`TZ=UTC`）で `APP_TIMEZONE` を解決し、date をパラメータで渡す」方式だった。新構成にサーバは無い。決め方は次の二択になる。
 
-| 案 | 決める場所 | 実装 | 長所 | 短所 |
-|---|---|---|---|---|
-| **案A**（本書の [仮]） | Flutter（端末TZ） | `resolveDateRange` を Dart 純関数で持つ。`p_today` / `p_range_start` / `p_range_end` を RPC に渡す | 純関数なので単体テストしやすい。海外滞在時は現地の暦日に追従できる | 端末TZを変えると同じ日の集計結果が変わる。記録側（FEAT-04・FEAT-08）と採番TZが揃わないとズレる |
-| 案B | RPC 内（固定TZ） | 関数内で `(now() AT TIME ZONE 'Asia/Tokyo')::date` から導出する | 端末設定に左右されない。全機能で暦日の定義が1つに揃う | 海外滞在時に現地の日付と食い違う。TZ変更に関数の再デプロイが要る |
+| 観点 | 案A（本書の [仮]） | 案B |
+|---|---|---|
+| 決める場所 | Flutter（端末TZ） | RPC 内（固定TZ） |
+| 実装 | `resolveDateRange` を Dart 純関数で持つ | `(now() AT TIME ZONE 'Asia/Tokyo')::date` から導出 |
+| 引数 | `p_today` / `p_range_start` / `p_range_end` を渡す | 上記3引数を持たない |
+| 長所 | 純関数なので単体テストしやすい | 端末設定に左右されない |
+| 長所 | 海外滞在時は現地の暦日に追従できる | 全機能で暦日の定義が1つに揃う |
+| 短所 | 端末TZを変えると同じ日の集計結果が変わる | 海外滞在時に現地の日付と食い違う |
+| 短所 | 記録側と採番TZが揃わないとズレる | TZ変更に関数の再デプロイが要る |
 
-どちらを採っても守ること:
+どちらを採っても守ること。
 
 | 項目 | 内容 |
 |---|---|
-| `CURRENT_DATE` / `now()::date` を素で使わない | Postgres セッションのTZは UTC。JST 00:00〜09:00 の間、前日を返す。案B でも `AT TIME ZONE` を必ず明示する |
-| 記録側とTZを揃える | `meal_logs.eaten_date` / `training_sessions.performed_date` は `date` 型でTZを持たない。記録時に採用したTZと集計時のTZが一致していることが前提（FEAT-04・FEAT-08） |
-| 二重定義を避ける | 案A では日付規則が Dart にしか無い。案B では SQL にしか無い。両方に書かない |
+| `CURRENT_DATE` / `now()::date` を素で使わない | Postgres セッションのTZは UTC。JST 00:00〜09:00 の間は前日を返す。案B でも `AT TIME ZONE` を必ず明示する |
+| 記録側とTZを揃える | `eaten_date` / `performed_date` は `date` 型でTZを持たない。記録時と集計時のTZ一致が前提（FEAT-04・FEAT-08） |
+| 二重定義を避ける | 案A では日付規則が Dart にしか無い。案B では SQL にしか無い。両方には書かない |
 
 - 本書は**案A を `[仮]`** とする。確定は §10-1。
 
@@ -263,8 +287,10 @@ GROUP BY u.id, u.weight_kg;
 ```
 
 - `LEFT JOIN` により、当日の食事記録が0件でも1行（`intake_g = 0`）が返る。
-- 旧構成はこのクエリの0行を ERR-DASHBOARD-002 の判定に使っていた。RPC では本人行の解決を先に行うため、**判定点が前倒しになる**（§5.4）。判定結果は変わらない。
-- `target_g` はこの `weight_kg` を FEAT-07 の Dart 関数に渡して求める。SQL で `weight_kg * 2` を計算しない（RULE-001 の重複定義を避ける）。
+- 旧構成はこのクエリの0行を ERR-DASHBOARD-002 の判定に使っていた。
+- RPC では本人行の解決を先に行う。**判定点が前倒しになる**（§5.4）。判定結果は変わらない。
+- `target_g` はこの `weight_kg` を FEAT-07 の Dart 関数に渡して求める。
+- SQL で `weight_kg * 2` を計算しない（RULE-001 の重複定義を避ける）。
 
 ### 5.3 Q2: ヒートマップ（期間集約・N+1回避）
 
@@ -287,10 +313,11 @@ GROUP BY s.performed_date
 ORDER BY s.performed_date;
 ```
 
-- **N+1回避**: 日付ごと・セッションごとのループ照会をしない。`GROUP BY performed_date` の1クエリで全日分を組み立てる。
+- **N+1回避**: 日付ごと・セッションごとのループ照会をしない。
+- `GROUP BY performed_date` の1クエリで全日分を組み立てる。
 - `array_agg` により種目名も同一クエリに含める。明細取得の追加クエリを発行しない。
-- 同じ日に複数の `training_sessions` があっても `performed_date` で集約される。1日1要素に正規化される。
-- PostgREST の埋め込み `select` でも1往復で取れるが、日付集約と重複排除が Flutter 側の処理になるので採らない。
+- 同じ日に複数の `training_sessions` があっても `performed_date` で集約され、1日1要素になる。
+- PostgREST の埋め込み `select` でも1往復で取れる。ただし日付集約と重複排除が Flutter 側の処理になるので採らない。
 
 ### 5.4 RPC `get_dashboard`（Q1・Q2 を1本にまとめる）
 
@@ -390,18 +417,43 @@ $$;
 ```
 
 - Q1・Q2 の SQL 本体は §5.2・§5.3 から変えていない。**N+1回避の結論は変わらない。**
-- 案B を採る場合、`p_today` / `p_range_start` / `p_range_end` を引数から外し、(1) の直後に `p_period` からの導出を足す。Q1・Q2 の本体は同じ。
+- 案B を採る場合、`p_today` / `p_range_start` / `p_range_end` を引数から外す。
+- 案B では (1) の直後に `p_period` からの範囲導出を足す（§5.1）。Q1・Q2 の本体は同じ。
 - 関数の DDL は `../01_DB物理設計.md` に存在しない。追記が要る（`../07_実装共通設計パターン.md §10-1` と同じ論点）。
+
+### 5.5 対象テーブル・INDEX・RLS
+
+**対象テーブル**（すべて SELECT のみ。INSERT/UPDATE/DELETE は無い）
+
+| テーブル | 用途 |
+|---|---|
+| `users` | 体重の取得・本人行の解決 |
+| `meal_logs` | 当日のタンパク質合計（Q1） |
+| `training_sessions` | 実施日の抽出（Q2） |
+| `training_session_details` | 実施有無の判定（Q2） |
+| `training_menus` | 種目名の解決（Q2） |
+
+**使用INDEX**
+
+| クエリ | INDEX | 使い方 |
+|---|---|---|
+| Q1 | `ix_meal_logs_user_date` | `user_id, eaten_date` の等値一致 |
+| Q2 | `ix_train_sessions_user_date` | `user_id, performed_date` の範囲スキャン |
+| Q2 | `uq_tsd_session_menu` | 先頭列 `session_id` で JOIN |
+| Q2 | `training_menus` の PK | 種目名の解決 |
+
+- **追加INDEXは現時点で不要**。新規INDEXの追加は `../01_DB物理設計.md` が正本のため本書では行わない。
+- `ix_gym_visits_user_date` は使わない。本機能は `gym_visits` を参照しない（§10-2 の論点）。
+
+**RLS・トランザクション**
 
 | 観点 | 内容 |
 |---|---|
-| 対象テーブル | `users`（SELECT） / `meal_logs`（SELECT） / `training_sessions`（SELECT） / `training_session_details`（SELECT） / `training_menus`（SELECT） |
-| 操作 | SELECT のみ（INSERT/UPDATE/DELETE なし） |
+| RLS | `user_id = auth.uid()` 相当で本人行のみ。`security invoker` なので関数内でも効く |
+| RLS | `users.id`(bigint) と `auth.uid()`(uuid) の紐付け方式は未確定（正本＝`../06_DB設計規約.md`） |
 | 往復回数 | 1（RPC 1本）。旧構成は2クエリを個別に発行していた |
-| 使用INDEX | Q1: `ix_meal_logs_user_date`（`user_id, eaten_date` の等値一致）／Q2: `ix_train_sessions_user_date`（`user_id, performed_date` の範囲スキャン）＋ `uq_tsd_session_menu`（先頭列 `session_id` で JOIN）＋ `training_menus` の PK。**追加INDEXは現時点で不要**（新規INDEXの追加は `../01_DB物理設計.md` が正本のため本書では行わない） |
-| 未使用INDEX | `ix_gym_visits_user_date`（本機能では `gym_visits` を参照しない。§10-2 の論点） |
-| RLS | `user_id = auth.uid()` 相当で本人行のみ。`security invoker` なので関数内でも RLS が効く。`users.id`(bigint) と `auth.uid()`(uuid) の紐付け方式は未確定（正本＝`../06_DB設計規約.md`・本書では決めない） |
-| トランザクション境界 | 関数本体が暗黙の単一トランザクション。参照のみのため明示的な `begin` は書かない。Q1/Q2 が同一スナップショットで読める点は旧構成（2回に分けた発行）より改善する |
+| トランザクション | 関数本体が暗黙の単一トランザクション。参照のみのため明示的な `begin` は書かない |
+| トランザクション | Q1/Q2 が同一スナップショットで読める。旧構成より改善する |
 
 ## 6. エラー処理
 
@@ -412,11 +464,14 @@ $$;
 | ERR-DASHBOARD-002 | 409 | `PT409` | `users` に本人行が存在しない（FEAT-06 の初期設定が未完了） | 初期設定（SCR-05）へ誘導する | false | warn |
 | ERR-DASHBOARD-003 | 500 | — | RPC の失敗（DB到達不能・タイムアウト・想定外例外） | 一時的な取得失敗として再試行を促す | true | error（所要時間を記録） |
 
-- `PT4xx` / `PT5xx` を `errcode` に指定すると PostgREST が同じ番号の HTTP ステータスで返す（`[仮]`・実装時に公式ドキュメントで確認）。
+- `PT4xx` / `PT5xx` を `errcode` に指定すると PostgREST が同じ番号の HTTP ステータスで返す。
+- 上記は `[仮]`。実装時に公式ドキュメントで確認する。
 - ERR-DASHBOARD-003 は RPC 側で分類できない。Flutter が `PostgrestException`・接続例外を捕まえて割り当てる。
-- `users.weight_kg` が NULL のケースは**エラーにしない**（`weight_kg: null` を返し、画面側で未設定表示に縮退する。[仮]・§10-4）。
+- `users.weight_kg` が NULL のケースは**エラーにしない**。`weight_kg: null` を返す（[仮]・§10-4）。
+- 画面側は未設定表示に縮退する（§7）。
 - 自動リトライは行わない（参照系のため、利用者操作の [再試行] に委ねる）。
-- ログは Supabase 側（Postgres ログ）に出る。Flutter 側のクラッシュ収集はスコープ外。分類・出力の横断方針は `../07_実装共通設計パターン.md` を正本とする。
+- ログは Supabase 側（Postgres ログ）に出る。Flutter 側のクラッシュ収集はスコープ外。
+- 分類・出力の横断方針は `../07_実装共通設計パターン.md` を正本とする。
 
 > ERRの完全列挙の正本は `../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`（段6で集約）。本表はその入力とする。
 
@@ -424,16 +479,20 @@ $$;
 
 | 状態 | 表示 | 操作可否 |
 |---|---|---|
-| 初期/空（記録0件） | ゲージは `intake_g=0`・`rate_pct=0` で描画。ヒートマップは全セル未実施色＋`Center`＋`Text` で「まだ記録がありません」 | `SegmentedButton` 操作可 |
-| 読込中 | ゲージ・ヒートマップの位置に `shimmer` のプレースホルダ（レイアウトシフト防止のため同サイズ） | `SegmentedButton` は `onSelectionChanged: null` で無効化 |
-| 成功 | ゲージ＝`CircularProgressIndicator(value: rate_pct / 100)` を `Stack` の中央 `Text`（`intake_g / target_g`）と重ねる。ヒートマップ＝各セルを `Tooltip(message: menu_names)` で包む。空配列の日は日付のみ | 全操作可 |
-| 体重未設定（`target_g: null`） | ゲージをグレー（`value` を渡さず進捗を描かない）＋「体重を設定するとゲージが表示されます」＋ SCR-05 への `ElevatedButton` | ゲージ以外は操作可 |
-| エラー（4xx/5xx） | ゲージ／ヒートマップ領域を エラー表示（`Icon`＋`Text` の `Card`）に差し替え＋[再試行] `TextButton`。加えて `ScaffoldMessenger.showSnackBar` | [再試行] のみ |
-| 期間切替中 | 直前の表示を保持したまま `Stack` に半透明の `Container`＋`CircularProgressIndicator` を重ねる（画面全体の再描画をしない） | 切替完了まで無効 |
+| 初期/空（記録0件） | ゲージは `intake_g=0`・`rate_pct=0` で描画。ヒートマップは全セル未実施色＋「まだ記録がありません」 | `SegmentedButton` 操作可 |
+| 読込中 | ゲージ・ヒートマップの位置に `shimmer` のプレースホルダ（同サイズでシフト防止） | `SegmentedButton` は `onSelectionChanged: null` |
+| 成功（ゲージ） | `CircularProgressIndicator(value: rate_pct / 100)` を `Stack` の中央 `Text`（`intake_g / target_g`）と重ねる | 全操作可 |
+| 成功（ヒートマップ） | 各セルを `Tooltip(message: menu_names)` で包む。空配列の日は日付のみ | 全操作可 |
+| 体重未設定（`target_g: null`） | ゲージをグレー表示（`value` を渡さない）＋「体重を設定するとゲージが表示されます」＋ SCR-05 への `ElevatedButton` | ゲージ以外は操作可 |
+| エラー（4xx/5xx） | ゲージ／ヒートマップ領域をエラー表示（`Icon`＋`Text` の `Card`）に差し替え＋[再試行] `TextButton`＋`SnackBar` | [再試行] のみ |
+| 期間切替中 | 直前の表示を保持したまま `Stack` に半透明の `Container`＋`CircularProgressIndicator` を重ねる | 切替完了まで無効 |
 
-- ゲージは `CircularProgressIndicator` で足りる。中央のラベル表示や太さの調整が要るなら `fl_chart` の `PieChart` に置き換える（[仮]）。
-- カレンダー型ヒートマップに相当する標準ウィジェットは無い。`GridView.builder` ＋ `Container` の自作とする（[仮]）。ADR-0002 が前提にしていた既製コンポーネントは使えない。
-- ダークモードの配色は `Theme.of(context).colorScheme` に追従させる。ヒートマップの2値（実施／未実施）のコントラストを両モードで確認する。
+- ゲージは `CircularProgressIndicator` で足りる。
+- 中央ラベルや太さの調整が要るなら `fl_chart` の `PieChart` に置き換える（[仮]）。
+- カレンダー型ヒートマップに相当する標準ウィジェットは無い。
+- `GridView.builder` ＋ `Container` の自作とする（[仮]）。ADR-0002 が前提にしていた既製コンポーネントは使えない。
+- ダークモードの配色は `Theme.of(context).colorScheme` に追従させる。
+- ヒートマップの2値（実施／未実施）のコントラストを両モードで確認する。
 - 初期表示 ≤2秒（NFR-PERF-01）は RPC 1往復と描画で満たす。遅延ロードの仕組みは持たない。
 
 ## 8. 実装単位
@@ -450,11 +509,14 @@ $$;
 | 8 | `app/lib/features/dashboard/training_heatmap.dart` | ヒートマップ表示・`Tooltip` で種目名 | `class TrainingHeatmap extends StatelessWidget` |
 | 9 | `app/lib/features/dashboard/period_control.dart` | `SegmentedButton`（日/週/月）と再取得 | `class PeriodControl extends StatelessWidget` |
 
-- 目標量の算出関数は **FEAT-07 が定義する `app/lib/domain/nutrition.dart` を import** する（配置・関数名の正本は FEAT-07 の詳細設計）。本機能では同等の計算を書かない。
+- 目標量の算出関数は **FEAT-07 が定義する `app/lib/domain/nutrition.dart` を import** する。
+- 配置・関数名の正本は FEAT-07 の詳細設計。本機能では同等の計算を書かない。
 - 純関数（#3・#4）は単体テスト対象（NFR-QUAL-01）。
 - 戻り値のスキーマ検証ライブラリは使わない。`fromJson` で型変換し、欠損はモデル側の既定値で吸収する。
 
 ## 9. テスト観点
+
+### 9.1 テストケース
 
 | TC-ID | 観点 | 期待 |
 |---|---|---|
@@ -475,7 +537,8 @@ $$;
 | TC-FEAT05-15 | 初期表示の所要時間 | ≤2秒（NFR-PERF-01） |
 | TC-FEAT05-16 | DB到達不能 | ERR-DASHBOARD-003・エラー表示＋[再試行] が出る |
 
-受入基準（G/W/T）の候補:
+### 9.2 受入基準（G/W/T）の候補
+
 - [AC] Given 当日の食事記録と体重が登録されている When SCR-01 を開く Then タンパク質ゲージが達成率とともに表示される
 - [AC] Given 摂取量が目標量を超えている When SCR-01 を開く Then 達成率は100%として表示される
 - [AC] Given 体重が未設定である When SCR-01 を開く Then ゲージは未設定表示になり、初期設定（SCR-05）への導線が示される
@@ -488,22 +551,24 @@ $$;
 
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | 「当日」判定のタイムゾーン | `meal_logs.eaten_date` は `date` 型でTZ情報を持たない。解決する場所が構成変更で変わった。旧構成はサーバ（`TZ=UTC`）で `APP_TIMEZONE` を使って解決していた。新構成では **案A（Flutter が端末TZで解決して RPC に渡す）／案B（RPC 内で `Asia/Tokyo` 固定）** の二択で、どちらも未確定（§5.1・本書は案A を [仮]）。案A は端末TZを変えると同じ日の集計が変わる。案B は海外滞在時に現地の日付と食い違う。いずれの案でも、記録側（FEAT-04・FEAT-08）が同じTZで `eaten_date` / `performed_date` を採番していなければ整合しない。加えて `CURRENT_DATE` / `now()::date` を素で使うと Postgres セッションTZ（UTC）により JST 00:00〜09:00 の間ゲージが前日を表示する | 🔴 高 |
-| 2 | `done` の定義が文書間で不一致 | `../../30_データ・IF設計/02_API設計.md §3` は `gym_visits` を「ヒートマップの実施有無元」と書き、`../01_DB物理設計.md §2.2` は `training_sessions.performed_date` を集計元と書き、`§4.3` は session→details→menus 経路を書く。**3つの記述が指す集計元が異なる**。入館したが記録が無い日の扱いが決まらない | 🔴 高 |
-| 3 | `done` 判定の粒度 | 「`training_sessions` が存在すれば done」か「`training_session_details.is_done` が1件以上 true なら done」かが未確定。本書は `is_done` 基準を [仮] としたが、セッション行の存在だけで done とするならヒートマップは「ジムに行った日」を表し、ST-02 の意味と乖離する。明細0件のセッション行の扱いも同じ論点 | 🔴 高 |
-| 4 | 体重未設定時のゲージ | `users.weight_kg` は NULL 可（`../01_DB物理設計.md §1.1`）だが、`../../30_データ・IF設計/02_API設計.md §4.3` の `target_g` は `float` で null を許していない。契約どおりなら 409 等でエラーにするしかなく、初回ログイン直後に必ずエラー画面になる。本書は `weight_kg: null` を返し画面側で `target_g: null` に縮退する案を [仮] とした。`rate_pct` の 0除算（`target_g=0`）ガードも契約に無い | 🔴 高 |
-| 5 | ゲージとヒートマップで期間の意味が違う | `period` は日/週/月を取るのに、`protein_gauge.intake_g` は「当日」固定で `period` の影響を受けない（`§4.3` に `protein_gauge` の期間定義が無い）。同一画面の2つの図が別の期間を表すことになり、利用者は「月」を選んだときゲージも月合計だと誤解しうる。週/月では平均達成率にするのか、ゲージは常に当日固定と明記するのかの判断が必要 | 🔴 高 |
-| 6 | 100%頭打ちで過剰摂取が見えない | ADR-0002 で達成率100%頭打ちを確定済みだが、150%摂取と100%摂取が同じ表示になり、**摂り過ぎに気づけない**。減量・増量いずれの目的でも過剰は情報として必要になりうる。リングは100%で止めつつ中央の数値（`intake_g / target_g`）や `Chip` で超過を示す等の補助表示が要るか | 🟡 中 |
-| 7 | `period` の既定値と `day` の情報価値 | `period` 省略時の既定値が契約に無い（本書は `month` を [仮]）。また `period=day` ではヒートマップが1セルになり可視化として成立しない。日表示ではヒートマップを当日の種目リストに差し替える等のUI判断が要る。ADR-0002 の「表示は常に1ヶ月」との関係も整理が必要 | 🟡 中 |
-| 8 | 週/月の境界規則がレスポンスに無い | `week` を「暦週（月曜〜日曜）」とするか「直近7日」とするか、`month` を「当月1日〜末日」とするか「直近30日」とするかが未定義（本書は暦基準を [仮]）。案A なら規則は Dart 側1箇所で済むが、案B では RPC 内に規則があり、未実施セルの描画範囲を Flutter が再計算するため二重実装になる。ズレると描画範囲が食い違う | 🟡 中 |
-| 9 | `intake_count` を掛けるか | `meal_logs.intake_count`（摂取数）の業務的意味が未確定（`../../30_データ・IF設計/01_データモデル.md §8-6`）。本書は `SUM(protein_g)` のみとしたが、FEAT-09（RPC `get_protein_remaining`）が異なる解釈を採ると、**同じ「当日摂取量」が画面ごとに違う値になる** | 🟡 中 |
-| 10 | 全履歴保持と集計性能 | 保持期間の制限が無い（`../../30_データ・IF設計/01_データモデル.md §7`）ため行数は単調増加する。ただし Q1 は `ix_meal_logs_user_date` の等値一致、Q2 は `ix_train_sessions_user_date` の範囲スキャンで、走査対象は期間内に限定されるため **month 表示では既存INDEXで足りる**（追加INDEXは不要と判断）。将来「年」表示・累積統計・複数ユーザー化を足すと前提が変わるため、その時点で再評価が必要 | 🟢 低 |
-| 11 | `users.id` と `auth.uid()` の紐付け未確定 | RLS と RPC を `auth.uid()` 起点で書くには bigint と uuid の対応方式が必要だが未確定（正本＝`../06_DB設計規約.md`）。§5.4 の `u.auth_user_id = auth.uid()` は [仮] であり、確定するまで `v_user_id` の解決方法が決まらない | 🟡 中 |
-| 12 | RULE-001 の計算場所 | 構成変更で新たに生じた論点。旧構成は `target_g` をサーバ側で算出し契約に含めていた。新構成で集計を RPC に寄せると、RULE-001（体重×2g）を SQL にも書くことになり FEAT-07 と二重定義になる。本書は RPC が `weight_kg` を返し、`target_g` / `rate_pct` は Flutter の Dart 関数で算出する案を [仮] とした。結果として RPC の戻り値と画面 DTO の形が一致しない | 🟡 中 |
+| 1 | 「当日」判定のタイムゾーン | 解決場所は**案A／案B の二択**で未確定（比較と守るべき点は §5.1）。本書は案A を [仮] とする。`meal_logs.eaten_date` は TZ を持たない `date` 型で、記録側（FEAT-04・FEAT-08）と採番TZが揃わないと整合しない | 🔴 高 |
+| 2 | `done` の定義が文書間で不一致 | 集計元の記述が3か所で食い違う。入館したが記録が無い日の扱いが決まらない。内訳＝段3 §3 は `gym_visits`／`../01_DB物理設計.md §2.2` は `performed_date`／段3 §4.3 は session→details→menus | 🔴 高 |
+| 3 | `done` 判定の粒度 | 「`training_sessions` があれば done」か「`is_done` が1件以上 true なら done」かが未確定。本書は `is_done` 基準を [仮]。前者ではヒートマップが「ジムに行った日」となり ST-02 と乖離する（明細0件の行も同じ論点） | 🔴 高 |
+| 4 | 体重未設定時のゲージ | `users.weight_kg` は NULL 可だが段3 §4.3 の `target_g` は null 不可。契約どおりだと初回ログイン直後に必ずエラーになる。本書は null 返却＋画面側の縮退表示を [仮]（§7／`rate_pct` の0除算ガードも契約に無い） | 🔴 高 |
+| 5 | ゲージとヒートマップで期間の意味が違う | 同一画面の2つの図が別の期間を表す。`period` は日/週/月だが `protein_gauge.intake_g` は当日固定（段3 §4.3 に期間定義が無い）。「月」でゲージも月合計だと誤解しうるため、週/月は平均達成率にするか当日固定と明記するかの判断が要る | 🔴 高 |
+| 6 | 100%頭打ちで過剰摂取が見えない | ADR-0002 で100%頭打ちを確定済みだが、150%摂取と100%摂取が同じ表示になり**摂り過ぎに気づけない**。減量・増量いずれの目的でも過剰は情報として要る。リングは100%で止めつつ中央の数値や `Chip` で超過を示す補助表示が要るか | 🟡 中 |
+| 7 | `period` の既定値と `day` の情報価値 | `period` 省略時の既定値が契約に無い（本書は `month` を [仮]）。`period=day` ではヒートマップが1セルになり可視化として成立しない。日表示は当日の種目リストに差し替える等のUI判断が要る（ADR-0002「表示は常に1ヶ月」との関係も整理が必要） | 🟡 中 |
+| 8 | 週/月の境界規則がレスポンスに無い | `week`＝暦週か直近7日か、`month`＝当月1日〜末日か直近30日かが未定義（本書は暦基準を [仮]）。案A なら規則は Dart 側1箇所で済む。案B は RPC 内に規則があり Flutter 側で描画範囲を再計算＝二重実装になり、ズレると範囲が食い違う | 🟡 中 |
+| 9 | `intake_count` を掛けるか | 本書は `SUM(protein_g)` のみとした（§4 L2）。`intake_count`（摂取数）の業務的意味が未確定（`01_データモデル.md §8-6`）。FEAT-09 が異なる解釈を採ると**同じ当日摂取量が画面ごとに違う値になる** | 🟡 中 |
+| 10 | 全履歴保持と集計性能 | 保持期間の制限が無く（`01_データモデル.md §7`）行数は単調増加する。ただし Q1・Q2 とも走査対象は期間内に限定される（§5.5）。**month 表示では既存INDEXで足りるが**、「年」表示・累積統計・複数ユーザー化を足すと前提が変わり再評価が要る | 🟢 低 |
+| 11 | `users.id` と `auth.uid()` の紐付け未確定 | §5.4 の `u.auth_user_id = auth.uid()` は [仮]。bigint と uuid の対応方式が未確定（正本＝`../06_DB設計規約.md`）。RLS・RPC は `auth.uid()` 起点のため、確定まで `v_user_id` の解決方法が決まらない | 🟡 中 |
+| 12 | RULE-001 の計算場所 | 構成変更で新たに生じた論点。旧構成は `target_g` をサーバ側で算出していた。集計を RPC に寄せると RULE-001（体重×2g）が FEAT-07 と二重定義になるため、本書は Dart 側算出を [仮] とした（戻り値と画面 DTO の形は一致しない） | 🟡 中 |
 
 > ⚠️ 要確認（人間判断）: #1 日付範囲の解決を Flutter（端末TZ・案A）にするか RPC 内の固定TZ（案B）にするか。記録側（FEAT-04・FEAT-08）の日付採番と揃える必要がある。
 
-> ⚠️ 要確認（人間判断）: #2・#3 ヒートマップの「実施有無」の集計元（`gym_visits` / `training_sessions` / `training_session_details.is_done`）と判定粒度の確定。確定内容は `../../30_データ・IF設計/02_API設計.md` と `../01_DB物理設計.md` の記述の食い違いの解消を伴う。
+> ⚠️ 要確認（人間判断）: #2・#3 ヒートマップの「実施有無」の集計元と判定粒度の確定。
+> 集計元の候補は `gym_visits` / `training_sessions` / `training_session_details.is_done` の3つ。
+> 確定は `../../30_データ・IF設計/02_API設計.md` と `../01_DB物理設計.md` の食い違いの解消を伴う。
 
 > ⚠️ 要確認（人間判断）: #4 体重未設定時に `target_g`・`rate_pct` を null で返す（本書の [仮]）ことを契約（`../../30_データ・IF設計/02_API設計.md §4.3`）に反映してよいか。
 
@@ -517,6 +582,10 @@ $$;
 
 > ⚠️ 要確認（人間判断）: #12 RULE-001 を Dart 側のみに置き、RPC は `weight_kg` を返すだけとする方針でよいか。
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）・`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。本機能では `GET /api/dashboard?period=` が RPC `get_dashboard` に置き換わるため、段3 §4.3 の契約表（パス・クエリ・レスポンス形）の改訂が要る。
+> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
+> 一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。
+> `30_データ・IF設計/02_API設計.md` も `/api/*` の Route Handler 契約のまま。後継ADRの起票と段3の改訂が必要。
+> 本機能では `GET /api/dashboard?period=` が RPC `get_dashboard` に置き換わる。
+> 段3 §4.3 の契約表（パス・クエリ・レスポンス形）の改訂が要る。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

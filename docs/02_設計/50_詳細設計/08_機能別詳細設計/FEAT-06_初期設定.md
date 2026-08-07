@@ -55,7 +55,8 @@ FEAT-05・FEAT-07・FEAT-09 は本機能が書き込んだ `users.weight_kg` の
 
 ## 2. 処理フロー
 
-`../../40_機能設計/01_シーケンス設計.md` に FEAT-06 のシーケンスは存在しないため、本書で新規に定義する（同ファイルの記法・アクター表記に合わせる）。
+FEAT-06 のシーケンスは `../../40_機能設計/01_シーケンス設計.md` に無い。本書で新規に定義する。
+記法とアクター表記は同ファイルに合わせる。
 
 ```mermaid
 sequenceDiagram
@@ -107,8 +108,15 @@ sequenceDiagram
 | 1 | Flutter の `TextFormField.validator` | アプリ層で唯一の検証。UX も兼ねる |
 | 2 | DB の CHECK 制約 | 最後の防波堤。違反メッセージを利用者に見せない |
 
-- 旧構成にあった中間のサーバ側再検証は、PostgREST 直接にしたことで**無くなる**（§10 論点8）。
-- トランザクション境界は「1文＝1トランザクション」。PostgREST 経由のため `BEGIN`〜`COMMIT` は張れない（正本は `../07_実装共通設計パターン.md`）。本機能は単一表・単一文のみで足りる。
+旧構成にあった中間のサーバ側再検証は**無くなる**。PostgREST 直接にしたためである（§10 論点8）。
+
+トランザクション境界は「1文＝1トランザクション」。
+
+| 項目 | 内容 |
+|---|---|
+| 張れない理由 | PostgREST 経由のため `BEGIN`〜`COMMIT` を発行できない |
+| 影響 | なし。本機能は単一表・単一文のみで足りる |
+| 正本 | `../07_実装共通設計パターン.md` |
 
 ## 3. 入出力仕様
 
@@ -168,7 +176,8 @@ Future<Profile> updateProfile(ProfileUpdate input) async {
 }
 ```
 
-`patch` のキーは DB列名と一致させる（`../06_DB設計規約.md` の物理命名規約に従い snake_case）。Dart 側でキャメルケースに変換しない。
+`patch` のキーは DB列名と一致させる。表記は snake_case（`../06_DB設計規約.md` の物理命名規約）。
+Dart 側でキャメルケースに変換しない。
 
 ### 3.3 バリデーション規則
 
@@ -189,33 +198,50 @@ Future<Profile> updateProfile(ProfileUpdate input) async {
 | `patch` 全体 | `name` / `target_training_count` / `weight_kg` のいずれか1つ以上を含む | ERR-PROFILE-005 |
 | 未知キー | `buildProfileUpdate` は上記3列以外を出力しない。万一届けば PostgREST が列不明で拒否 | ERR-VALIDATION-001 |
 
-入力ウィジェットは `TextFormField` に統一する。旧構成の `NumberInput` に相当する単一部品は Flutter に無いため、**書式は `TextInputFormatter`・範囲は `validator`** と役割を分ける。
+### 3.4 入力ウィジェット
 
-| 入力 | Flutter 指定 |
+入力ウィジェットは `TextFormField` に統一する。
+
+旧構成の `NumberInput` に相当する単一部品は Flutter に無い。役割を2つに分ける。
+
+| 役割 | 担当 |
 |---|---|
-| 体重 | `TextFormField`（`keyboardType: TextInputType.numberWithOptions(decimal: true)`）＋ `FilteringTextInputFormatter.allow(RegExp(r'^\d{0,3}(\.\d?)?$'))` ＋ `validator`（20.0〜300.0）＋ `decoration: InputDecoration(suffixText: 'kg')` |
-| 目標ログイン回数 | `TextFormField`（`keyboardType: TextInputType.number`）＋ `FilteringTextInputFormatter.digitsOnly` ＋ `validator`（0〜31）＋ `suffixText: '回/月'` |
-| 表示名 | `TextFormField` ＋ `maxLength: 50` ＋ `validator`（トリム後1文字以上） |
+| 文字種と桁形を縛る | `TextInputFormatter` |
+| 範囲（20.0〜300.0・0〜31）を弾く | `validator` |
 
-- `TextInputFormatter` が縛るのは**文字種と桁形**だけ。範囲（20.0〜300.0・0〜31）は縛れないので `validator` で弾く。旧構成の `clampBehavior="strict"`（範囲外を入力させない）に相当する挙動は持たない。
-- `validator` の実体は `app/lib/domain/profile.dart` の純関数に置き、ウィジェットから切り離して単体テストする（NFR-QUAL-01）。
-- 検証を通ってからでないと `updateProfile` を呼ばない。NFR-SEC-01 が求めるサーバ側再検証は、この構成では成立しない（§10 論点8）。
+| 入力 | `keyboardType` | `TextInputFormatter` | `validator` | 装飾 |
+|---|---|---|---|---|
+| 体重 | `TextInputType.numberWithOptions(decimal: true)` | `FilteringTextInputFormatter.allow(RegExp(r'^\d{0,3}(\.\d?)?$'))` | 20.0〜300.0 | `InputDecoration(suffixText: 'kg')` |
+| 目標ログイン回数 | `TextInputType.number` | `FilteringTextInputFormatter.digitsOnly` | 0〜31 | `suffixText: '回/月'` |
+| 表示名 | 既定 | なし（`maxLength: 50` で桁を縛る） | トリム後1文字以上 | — |
+
+- 旧構成の `clampBehavior="strict"`（範囲外を入力させない）に相当する挙動は持たない。
+- `validator` の実体は `app/lib/domain/profile.dart` の純関数に置く。
+- ウィジェットから切り離して単体テストする（NFR-QUAL-01）。
+- 検証を通ってからでないと `updateProfile` を呼ばない。
+- NFR-SEC-01 が求めるサーバ側再検証は、この構成では成立しない（§10 論点8）。
 
 ## 4. 業務ロジック
 
 ### 4.1 `users` 行の作成タイミング（設計判断）
 
-初回サインアップ時に `users` 行が存在しないケースの扱いを決める。**設計判断そのものは旧構成から維持**するが、Route Handler が無くなったため置き場所を選び直す。
+初回サインアップ時に `users` 行が存在しないケースの扱いを決める。
 
-| 案 | 内容 | 判定 |
-|---|---|---|
-| **a（推奨 `[仮]`）** | `auth.users` への AFTER INSERT トリガで `public.users` 行を作る（`supabase/migrations/*.sql`） | **推奨**。サインアップ経路（メールリンク・OAuth）に関係なく必ず走り、作成漏れが構造的に起きない。クライアント実装に依存しない |
-| b | Flutter の起動時に `supabase.from('users').upsert(...)` を1回呼ぶ | 次善。アプリだけで完結するが、`upsert` の競合キーが必要で論点1に同じくブロックされる。起動のたびに1往復増える |
-| c | 旧案の共通関数 `ensureUserRow()` を各API入口で呼ぶ | **不採用**。Route Handler を前提にした案であり、PostgREST 直接の構成では呼ばれる場所が無い |
+**設計判断そのものは旧構成から維持する。** Route Handler が無くなったため置き場所だけを選び直す。
+
+| 案 | 置き場所 | 判定 | 長所 | 短所 |
+|---|---|---|---|---|
+| **a** `[仮]` | `auth.users` への AFTER INSERT トリガ（`supabase/migrations/*.sql`） | **推奨** | サインアップ経路（メールリンク・OAuth）に依らず必ず走る | 論点1が決着するまで書けない |
+| **a** `[仮]` | 〃 | 〃 | 作成漏れが構造的に起きない。クライアント実装に依存しない | 〃 |
+| b | Flutter の起動時に `supabase.from('users').upsert(...)` を1回呼ぶ | 次善 | アプリだけで完結する | `upsert` の競合キーが要る。論点1に同じくブロックされる |
+| b | 〃 | 〃 | 〃 | 起動のたびに1往復増える |
+| c | 旧案の共通関数 `ensureUserRow()` を各API入口で呼ぶ | **不採用** | — | Route Handler 前提の案。PostgREST 直接では呼ばれる場所が無い |
 
 - 案a を採ると、読み取り時の0行は「初回」ではなく**異常**になる。ERR-PROFILE-004 として扱う（§6）。
-- 案a はいまは**書けない**。`auth.users.id`（uuid）を `public.users` のどの列に書くかが未確定のため（§10 論点1）。論点1の決着が案aの実装可否に直結する。
-- 論点1が決着するまでの暫定として案b を置く選択肢は残す。ただし案b も `upsert` の競合キーに同じ列が要るため、**論点1を回避できるわけではない**。
+- 案a はいまは**書けない**。`auth.users.id`（uuid）を `public.users` のどの列に書くかが未確定（§10 論点1）。
+- 論点1の決着が案aの実装可否に直結する。
+- 決着までの暫定として案b を置く選択肢は残す。
+- ただし案b も `upsert` の競合キーに同じ列が要る。**論点1を回避できるわけではない。**
 
 ### 4.2 既定値
 
@@ -250,8 +276,11 @@ const kDefaultTargetTrainingCount = 12; // RULE-007。正本はトリガ側の S
 | `weight_kg` に数値 | 更新 | `'weight_kg': 62.5` |
 
 - `name` は `not null` のため `null` を受け付けない（`null` 指定時は ERR-PROFILE-003）。
-- Dart の `null` は「未指定」と「明示的な null」を区別できない。`ProfileUpdate` はフィールドごとに**不在／null／値**の3状態を持てる形にする（センチネル値または `Object?` ラッパ）`[仮]`。
-- `buildProfileUpdate(ProfileUpdate input) -> Map<String, dynamic>` は純関数として切り出し、単体テスト対象にする（NFR-QUAL-01）。
+- Dart の `null` は「未指定」と「明示的な null」を区別できない。
+- `ProfileUpdate` はフィールドごとに**不在／null／値**の3状態を持てる形にする `[仮]`。
+- 実装手段はセンチネル値または `Object?` ラッパ。
+- `buildProfileUpdate(ProfileUpdate input) -> Map<String, dynamic>` は純関数として切り出す。
+- 単体テスト対象にする（NFR-QUAL-01）。
 
 ### 4.4 必要タンパク質量との関係
 
@@ -261,8 +290,13 @@ const kDefaultTargetTrainingCount = 12; // RULE-007。正本はトリガ側の S
 
 ### 4.5 目標ログイン回数の意味
 
-- 要件上の「目標ログイン回数」は物理列 `users.target_training_count`（`../01_DB物理設計.md §1.1`「目標トレーニング回数（月）」）に格納する。両者は同一の値を指す。
-- 単位は月固定（回/月）。日・週の目標へ換算する処理は FEAT-06 に持たせない。
+| 項目 | 内容 |
+|---|---|
+| 要件上の呼称 | 目標ログイン回数 |
+| 物理列 | `users.target_training_count` |
+| 列の説明 | 「目標トレーニング回数（月）」（`../01_DB物理設計.md §1.1`） |
+| 関係 | 両者は同一の値を指す。呼称のずれは §10 論点6 |
+| 単位 | 月固定（回/月）。日・週の目標へ換算する処理は持たせない |
 
 ## 5. データアクセス
 
@@ -274,16 +308,22 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | 2 | `from('users').update(patch).eq('id', $1).select(...).single()` | `UPDATE users SET <patch の列> WHERE id = $1 RETURNING ...` ＋ RLS 述語 |
 | 3 | `auth.users` の AFTER INSERT トリガ（§4.1 案a `[仮]`） | `INSERT INTO users (name, target_training_count, weight_kg) VALUES (...)` |
 
-- 1 と 2 に `WHERE` 相当を書かなくても RLS が本人行に絞る。`.eq('id', ...)` は二重防御であり、**RLS の代替ではない**。
-- 旧構成では `SELECT` と不在時 `INSERT` を1トランザクションに包んでいた。案a では行作成がトリガ（サインアップ側のトランザクション内）に移るため、この結合は不要になる。
+- 1 と 2 に `WHERE` 相当を書かなくても RLS が本人行に絞る。
+- `.eq('id', ...)` は二重防御であり、**RLS の代替ではない**。
+- 旧構成では `SELECT` と不在時 `INSERT` を1トランザクションに包んでいた。
+- 案a では行作成がトリガ側（サインアップのトランザクション内）に移る。この結合は不要になる。
 
 | 観点 | 内容 |
 |---|---|
 | 対象テーブル | `users`（DM-01）のみ。他テーブルへの読み書きは行わない |
-| 使用INDEX | PK `users(id)` の一意インデックスのみ。行数が極小のため追加INDEXは不要（`../01_DB物理設計.md §3` に FEAT-06 用の追加は無い） |
-| RLS | 本人行のみ。`users` は `user_id` 列を持たず自分自身がユーザー行のため、述語は `id` 側で書く必要がある（§10 論点1に依存） |
-| トランザクション境界 | 1文＝1トランザクション（PostgreSQL の暗黙トランザクション）。PostgREST 経由のため複数文をまたぐ境界は張れない |
-| 更新0行の扱い | `.single()` が `PostgrestException` を投げる → ERR-PROFILE-006。RLS で弾かれた場合もここに落ちる |
+| 使用INDEX | PK `users(id)` の一意インデックスのみ |
+| 追加INDEX | 不要。行数が極小（`../01_DB物理設計.md §3` に FEAT-06 用の追加は無い） |
+| RLS | 本人行のみ。述語は `id` 側で書く（`users` は `user_id` 列を持たない） |
+| RLS の前提 | 自分自身がユーザー行である。書き方は §10 論点1 に依存 |
+| トランザクション境界 | 1文＝1トランザクション（PostgreSQL の暗黙トランザクション） |
+| 境界の制約 | PostgREST 経由のため複数文をまたぐ境界は張れない |
+| 更新0行の扱い | `.single()` が `PostgrestException` を投げる → ERR-PROFILE-006 |
+| RLS 拒否の扱い | 同上。ERR-PROFILE-006 に落ちる |
 
 ## 6. エラー処理
 
@@ -311,7 +351,10 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 
 - CHECK 違反のメッセージを利用者向け文言の生成源にしない。DBのメッセージはログにだけ残す。
 - 本機能は AI を使わないため `ERR-AI-*` は発生せず、NFR-AVAIL-05 の縮退対象外。
-- ERRドメイン `ERR-PROFILE-*` は FEAT-07 と共有する。FEAT-06 は **001〜019** のみを使い、020以降は FEAT-07 に譲る。分類（業務エラー／システムエラー／一時失敗）とログ出力の横断方針は `../07_実装共通設計パターン.md` を正本とし、本書では再定義しない。
+- ERRドメイン `ERR-PROFILE-*` は FEAT-07 と共有する。FEAT-06 は **001〜019** のみを使う。
+- **020以降は FEAT-07 に譲る。**
+- 分類（業務エラー／システムエラー／一時失敗）とログ出力の横断方針は本書で再定義しない。
+- 正本は `../07_実装共通設計パターン.md`。
 
 > ERRの完全列挙の正本は `../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`（段6で集約）。本表はその入力とする。
 
@@ -321,17 +364,21 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 
 | 状態 | 表示 | 操作可否 |
 |---|---|---|
-| 初期/空（`weight_kg` が null） | 体重の `TextFormField` は空欄＋`hintText: '未設定'`。`MaterialBanner`（警告色）で「体重を設定するとタンパク質の目標が計算されます」と FEAT-07/09 への誘導を出す。目標回数には既定 12 が入っている | 入力・保存可 |
+| 初期/空（`weight_kg` が null） | 体重の `TextFormField` は空欄＋`hintText: '未設定'`。目標回数には既定 12 が入っている | 入力・保存可 |
+| 初期/空（未設定の誘導） | `MaterialBanner`（警告色）で「体重を設定するとタンパク質の目標が計算されます」と出し FEAT-07/09 へ誘導 | 入力・保存可 |
 | 読込中 | `shimmer` で入力欄と同じ高さのプレースホルダを3本表示（表示名・目標回数・体重） | 入力不可 |
-| 保存中 | 保存ボタンを `onPressed: null` にし、ラベル位置に `CircularProgressIndicator` を出す（二重送信防止） | 入力不可 |
-| 成功 | `ScaffoldMessenger.showSnackBar` で「保存しました」。フォームの値を応答値で置き換える（サーバ側のトリム結果を反映） | 入力・保存可 |
-| エラー（ERR-PROFILE-001/002/003/005） | 該当 `TextFormField` の `validator` 戻り値としてメッセージを表示。`SnackBar`（エラー色）を併用 | 入力・保存可（再入力を促す） |
+| 保存中 | 保存ボタンを `onPressed: null` にし、ラベル位置に `CircularProgressIndicator`（二重送信防止） | 入力不可 |
+| 成功 | `ScaffoldMessenger.showSnackBar` で「保存しました」。値を応答値で置き換える（トリム結果を反映） | 入力・保存可 |
+| エラー（ERR-PROFILE-001/002/003/005） | 該当 `TextFormField` の `validator` 戻り値として表示。`SnackBar`（エラー色）を併用 | 入力・保存可（再入力を促す） |
 | エラー（ERR-AUTH-001） | ログイン画面へ遷移 | 不可 |
-| エラー（ERR-PROFILE-004/006） | `SnackBar`（エラー色）で再試行を促し、入力値は保持する（消さない） | 入力・保存可 |
+| エラー（ERR-PROFILE-004/006） | `SnackBar`（エラー色）で再試行を促す。入力値は保持する（消さない） | 入力・保存可 |
 
-- フォーム状態は `Form` ＋ `GlobalKey<FormState>` ＋ `TextFormField.validator` で管理する。`validator` には §3.3 と同値の規則を置く。
+- フォーム状態は `Form` ＋ `GlobalKey<FormState>` ＋ `TextFormField.validator` で管理する。
+- `validator` には §3.3 と同値の規則を置く。
 - 保存は自動保存にせず、明示的なボタン押下でのみ発火させる（誤入力の即時反映を避ける）。
-- 体重・目標回数の変更は FEAT-05 のダッシュボード表示に波及する。保存成功後に SCR-01 の取得結果を破棄して再取得する。状態管理ライブラリは未選定のため、破棄の実装手段は `[仮]`。
+- 体重・目標回数の変更は FEAT-05 のダッシュボード表示に波及する。
+- 保存成功後に SCR-01 の取得結果を破棄して再取得する。
+- 破棄の実装手段は `[仮]`。状態管理ライブラリが未選定のため。
 
 ## 8. 実装単位
 
@@ -340,8 +387,19 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 | 1 | `app/lib/features/settings/settings_page.dart` | SCR-05 の画面。読込・保存・状態別表示（§7） | `class SettingsPage extends StatefulWidget` |
 | 2 | `app/lib/features/settings/settings_form.dart` | `Form` ＋ 3つの `TextFormField`（§3.3）。`validator` は #4 の純関数を呼ぶだけ | `class SettingsForm extends StatelessWidget` |
 | 3 | `app/lib/data/profile_repository.dart` | PostgREST アクセス（§3.1・§3.2）と `PostgrestException` → ERR-ID の写像（§6） | `Future<Profile> fetchProfile()` ／ `Future<Profile> updateProfile(ProfileUpdate input)` |
-| 4 | `app/lib/domain/profile.dart` | モデル・検証・`patch` 生成。純関数のみで単体テスト対象（NFR-QUAL-01） | `class Profile { factory Profile.fromJson(Map<String, dynamic>) }` ／ `Map<String, dynamic> buildProfileUpdate(ProfileUpdate)` ／ `String? validateWeightKg(String?)` ／ `String? validateTargetTrainingCount(String?)` ／ `String? validateName(String?)` ／ `const kDefaultTargetTrainingCount` |
+| 4 | `app/lib/domain/profile.dart` | モデル・検証・`patch` 生成。純関数のみで単体テスト対象（NFR-QUAL-01） | 下表 |
 | 5 | `supabase/migrations/*.sql` | `auth.users` の AFTER INSERT トリガ（§4.1 案a `[仮]`）と `users` の RLS ポリシー。論点1の決着後に着手 | `create function public.handle_new_user() returns trigger` |
+
+`profile.dart`（#4）が公開するもの。
+
+| 種別 | シグネチャ |
+|---|---|
+| モデル | `class Profile { factory Profile.fromJson(Map<String, dynamic>) }` |
+| `patch` 生成 | `Map<String, dynamic> buildProfileUpdate(ProfileUpdate)` |
+| 検証（体重） | `String? validateWeightKg(String?)` |
+| 検証（目標回数） | `String? validateTargetTrainingCount(String?)` |
+| 検証（表示名） | `String? validateName(String?)` |
+| 既定値 | `const kDefaultTargetTrainingCount` |
 
 ## 9. テスト観点
 
@@ -376,27 +434,61 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | 認証主体と `users` 行の紐付けが未確定 | `users.id` は `bigint` 自動採番、`auth.uid()` は `uuid`。両者を結ぶ列も一意制約も `users` に無い（`../01_DB物理設計.md §1.1`「一意性: 当面なし」）。**PostgREST 直接にしたことで影響が広がった**。旧構成では Route Handler が本人行を解決できたが、いまは (1) `users` の RLS 述語、(2) `update` の `.eq('id', ...)` に渡す値、(3) §4.1 案a のトリガが `auth.users.id` を書き込む先、の3つが同時に書けない。本機能が全機能中で最初にこの穴に当たる | 🔴 高 |
-| 2 | 体重が現在値1点しか無い | `users.weight_kg` は履歴を持たないため、FEAT-05 が過去期間のダッシュボードを描くとき「当時の体重」ではなく「現在の体重」で目標タンパク質量を計算してしまう。体重が変われば過去の達成率が遡って書き換わる。履歴テーブル（測定日＋体重）の要否判断が要る。本書では列・テーブルを追加しない | 🔴 高 |
-| 3 | `weight_kg` が NULL のまま下流が呼ばれる | 体重未設定でも FEAT-07（必要量算出）・FEAT-09（残量・不足分）は呼べてしまう。0扱い・エラー・未設定誘導のどれにするかは FEAT-07 が正本だが、FEAT-06 側でも SCR-05 と SCR-01 に未設定誘導（§7 の `MaterialBanner`）を置く前提で設計している。両者の整合が要る | 🟡 中 |
-| 4 | `target_training_count` の利用先が設計上どこにも無い | RULE-007 で既定を月12回と決め本機能で保存するが、FEAT-05 のダッシュボード応答（`../../30_データ・IF設計/02_API設計.md §4.3`）は `protein_gauge` と `heatmap` のみで、目標回数もその達成率も返さない。保存するだけで誰も読まない設定値になっている | 🔴 高 |
-| 5 | 表示名の二重管理 | `users.name` は `not null` だが、Supabase Auth 側にも表示名（`raw_user_meta_data`）とメールアドレスがある。どちらが正かを決めないと、片方だけ更新されて食い違う。§4.1 案a のトリガは初回のみ Auth 側から写す設計で、以後の同期は行わない | 🟡 中 |
-| 6 | 用語と列名のずれ | 要件側の呼称は「目標**ログイン**回数」、物理列は `target_training_count`（目標**トレーニング**回数）。ジムへの入館（`gym_visits`）・トレーニング実施（`training_sessions`）・アプリへのログインのどれを数えるのかが確定していない。達成率の集計元テーブルが変わる | 🟡 中 |
-| 7 | 上限値に業務的根拠が無い | `weight_kg` ≤300.0、`name` ≤50文字は入力ミス検知のための `[仮]` 値。`target_training_count` ≤31 も「1日1回・月最大31日」という仮定に依存し、1日2回のトレーニングを数える運用では不足する | 🟢 低 |
-| 8 | アプリ側の検証が1段しか無い | PostgREST 直接にしたことで、旧構成にあった中間層の再検証が消えた。DBの CHECK は `weight_kg > 0` と `target_training_count ≥ 0` だけ（`../01_DB物理設計.md §1.1`）。**20.0〜300.0・小数第1位・0〜31・`name` 1〜50文字は、Flutter を通らない経路では誰も守らない**。利用者本人の JWT があれば PostgREST を直接叩けるため、NFR-SEC-01「クライアント検証を信頼しない」と正面から矛盾する。取り得る案は (a) CHECK 制約を §3.3 と同値まで強める（DB設計の改訂が要る）、(b) 更新を RPC 化して関数内で検証する、(c) 単一ユーザー運用のため受容する。**本書ではDB設計を変えず指摘にとどめる** | 🔴 高 |
+| 1 | 認証主体と `users` 行の紐付けが未確定 | `users.id` は bigint、`auth.uid()` は uuid。結ぶ列も一意制約も無い（`../01_DB物理設計.md §1.1`）。RLS述語（§5）・`.eq()`（§3.2）・トリガ（§4.1）が同時に書けない | 🔴 高 |
+| 2 | 体重が現在値1点しか無い | `users.weight_kg` は履歴を持たず、FEAT-05 は過去期間も「現在の体重」で目標量を計算する。体重を変えると過去の達成率が遡って書き換わる。履歴テーブル（測定日＋体重）の要否判断が要る | 🔴 高 |
+| 3 | `weight_kg` が NULL のまま下流が呼ばれる | 体重未設定でも FEAT-07・FEAT-09 は呼べてしまう。0扱い・エラー・未設定誘導のどれにするかは FEAT-07 が正本。FEAT-06 側も §7 の `MaterialBanner` で誘導する前提のため整合が要る | 🟡 中 |
+| 4 | `target_training_count` の利用先が設計上どこにも無い | RULE-007 の既定＝月12回を保存するが、FEAT-05 の応答は目標回数も達成率も返さない。保存するだけで誰も読まない設定値（`../../30_データ・IF設計/02_API設計.md §4.3`） | 🔴 高 |
+| 5 | 表示名の二重管理 | `users.name` は `not null`。Auth 側にも表示名（`raw_user_meta_data`）とメールがある。どちらが正か決めないと片方だけ更新されて食い違う（§4.1 案a は初回のみ写す） | 🟡 中 |
+| 6 | 用語と列名のずれ | 要件は「目標**ログイン**回数」、物理列は `target_training_count`（＝トレーニング回数）。`gym_visits`・`training_sessions`・アプリログインのどれを数えるか未確定（集計元が変わる） | 🟡 中 |
+| 7 | 上限値に業務的根拠が無い | `weight_kg` ≤300.0・`name` ≤50文字は入力ミス検知のための `[仮]` 値（§3.3）。回数 ≤31 も「1日1回・月最大31日」の仮定に依存し、1日2回の運用では不足する | 🟢 低 |
+| 8 | アプリ側の検証が1段しか無い | DBの CHECK は `weight_kg > 0` と `回数 ≥ 0` だけ。§3.3 の範囲・桁・文字数は Flutter 外では守られず NFR-SEC-01 と矛盾（案は (a) CHECK 強化・(b) RPC 化・(c) 受容） | 🔴 高 |
 
-> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）・`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。
+- 論点1: 旧構成では Route Handler が本人行を解決できた。本機能が全機能中で最初にこの穴に当たる。
+- 論点2: 履歴テーブルは本書では追加しない（指摘にとどめる）。
+- 論点8: 案(a)(b)(c) のいずれも採らず、**本書ではDB設計を変えず指摘にとどめる**。
 
-> ⚠️ 要確認（人間判断）: 段3 との具体的な乖離。`GET /api/profile` と `PUT /api/profile` は**廃止**し、`users` への PostgREST 直接アクセスに置き換わる。`../../30_データ・IF設計/02_API設計.md §3` のプロフィール契約表と、`../06_DB設計規約.md §5` の「APIパスは kebab-case」規約（本機能に適用対象が無くなる）の改訂が要る。HTTP ステータス（200/400/401/404/500）を前提にした記述も、`PostgrestException` ベースに読み替える必要がある。
+### 10.5 要確認（人間判断）
 
-> ⚠️ 要確認（人間判断）: 論点1（`users.id` と `auth.uid()` の紐付け方式）は本機能では決めない。方式の正本は `../06_DB設計規約.md §4.2` とし、そこで確定するまで §5 の RLS 述語・`update` の絞り込み・§4.1 案a のトリガはいずれも書けない。**案a を採るか案b を採るかも、論点1の決着なしには判断できない。**
+> ⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。
+>
+> - ADR-0001（Vercel AI Gateway 採用）は Vercel 前提のまま
+> - ADR-0002（Next.js + Mantine 採用）も Vercel 前提のまま
+> - `30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同様
+> - 後継ADRの起票と段3の改訂が必要
+
+> ⚠️ 要確認（人間判断）: 段3 との具体的な乖離。
+>
+> - `GET /api/profile` と `PUT /api/profile` は**廃止**する
+> - 代わりに `users` への PostgREST 直接アクセスに置き換わる
+> - `../../30_データ・IF設計/02_API設計.md §3` のプロフィール契約表の改訂が要る
+> - `../06_DB設計規約.md §5` の「APIパスは kebab-case」規約は適用対象が無くなる
+> - HTTP ステータス（200/400/401/404/500）前提の記述も読み替えが要る
+> - 読み替え先は `PostgrestException` ベース
+
+> ⚠️ 要確認（人間判断）: 論点1（`users.id` と `auth.uid()` の紐付け方式）は本機能では決めない。
+>
+> - 方式の正本は `../06_DB設計規約.md §4.2`
+> - 確定するまで §5 の RLS 述語は書けない
+> - 確定するまで `update` の絞り込みも書けない
+> - 確定するまで §4.1 案a のトリガも書けない
+> - **案a を採るか案b を採るかも、論点1の決着なしには判断できない。**
 
 > ⚠️ 要確認（人間判断）: 論点8（検証層が1段になる件）について、CHECK 制約を強めるか・RPC 化するか・受容するかを決めること。受容する場合は NFR-SEC-01 の適用範囲を明示的に狭める必要がある。
 
 > ⚠️ 要確認（人間判断）: 論点2（体重の履歴保持）について、過去期間のダッシュボードを「当時の体重」で計算する必要があるか。必要なら体重履歴テーブルの新設が要るが、本書では `users` に列を追加せず指摘にとどめる。
 
-> ⚠️ 要確認（人間判断）: 論点4（`target_training_count` の利用先）について、目標ログイン回数を FEAT-05 のダッシュボードで達成率として見せるのか、見せないなら本設定項目自体が必要かを判断すること。見せる場合は FEAT-05 の応答契約に目標回数と実績回数の追加が要る。
+> ⚠️ 要確認（人間判断）: 論点4（`target_training_count` の利用先）を判断すること。
+>
+> - 目標ログイン回数を FEAT-05 のダッシュボードで達成率として見せるのか
+> - 見せないなら、本設定項目自体が必要か
+> - 見せる場合は FEAT-05 の応答契約に目標回数と実績回数の追加が要る
 
-> ⚠️ 要確認（人間判断）: 論点6（「ログイン回数」の定義）について、数える対象がジム入館（`gym_visits`）・トレーニング実施（`training_sessions`）・アプリログインのいずれかを確定すること。
+> ⚠️ 要確認（人間判断）: 論点6（「ログイン回数」の定義）で数える対象を確定すること。
+>
+> - ジム入館（`gym_visits`）
+> - トレーニング実施（`training_sessions`）
+> - アプリログイン
 
-> 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。
+> 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md`
+> / 横断方針＝`../07_実装共通設計パターン.md`
+> / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。
