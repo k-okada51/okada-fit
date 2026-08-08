@@ -9,6 +9,8 @@ status: draft
 
 > ⚠️ **本書はたたき台（2026-08-02 生成）**。岡田さんのレビューで確定する。
 
+> 📖 ID（`FEAT-` `NFR-` `RULE-` 等）の意味は [ID早見表](../../00_ID早見表.md) を参照。
+
 ## 目次
 1. [概要](#1-概要)
 2. [処理フロー](#2-処理フロー)
@@ -554,11 +556,11 @@ SCR-05 設定・プロフィール内の「食事マスタ取込」セクショ�
 | TC-FEAT10-21 | UNIQUE 制約の実在 | `uq_foods_name` が無い状態で `import_foods` を呼ぶと `on conflict (name)` が失敗する（マイグレーション順序の担保・§8） |
 
 受入基準（G/W/T）の候補:
-- [AC] Given SCR-05 を開いている When 正しい形式のCSV（数百行）を選んで取り込む Then 取込件数・スキップ件数・検出文字コードのサマリが成功SnackBarとともに5秒以内に表示される
+- [AC] Given SCR-05（設定・プロフィール）を開いている When 正しい形式のCSV（数百行）を選んで取り込む Then 取込件数・スキップ件数・検出文字コードのサマリが成功SnackBarとともに5秒以内に表示される
 - [AC] Given 3行目の `protein_amount` が負値のCSV When 取り込む Then ERR-FOOD-002 とともに「3行目・protein_amount」がエラー一覧に示され、`foods` は取込前の内容のままである
 - [AC] Given 一度取り込み済みの食事マスタがある When 同じCSVをもう一度取り込む Then 「取込 0件・スキップ 全件」と表示され `foods` の件数・内容は変わらない
 - [AC] Given `鶏むね肉` が登録済みである When `鶏むね肉` を含み `protein_amount` だけ違うCSVを取り込む Then その行はスキップされ、登録済みの `protein_amount` は変わらない
-- [AC] Given 新しい食品を1つだけ足したい When ヘッダ1行＋データ1行のCSVを取り込む Then 「取込 1件・スキップ 0件」と表示され、その食品が FEAT-09 の候補に現れる
+- [AC] Given 新しい食品を1つだけ足したい When ヘッダ1行＋データ1行のCSVを取り込む Then 「取込 1件・スキップ 0件」と表示され、その食品が FEAT-09（タンパク質残量と不足分提示）の候補に現れる
 - [AC] Given Excel で Shift_JIS 保存されたCSV When 取り込む Then 日本語の食品名が文字化けせず取り込まれ、`detected_encoding` に `shift_jis` が表示される
 
 > 受入基準・ST・ERR の**正本は段6**（`../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`・本PR対象外）。本節はその母集合への入力。

@@ -9,6 +9,8 @@ status: draft
 
 > ⚠️ **本書はたたき台（2026-08-02 生成）**。岡田さんのレビューで確定する。
 
+> 📖 ID（`FEAT-` `NFR-` `RULE-` 等）の意味は [ID早見表](../../00_ID早見表.md) を参照。
+
 ## 目次
 1. [概要](#1-概要)
 2. [処理フロー](#2-処理フロー)
@@ -35,7 +37,7 @@ status: draft
 | 状態 | 本機能は状態を持たない（参照系）。ただし ST-01 `not_done` / ST-02 `done` を**集計対象として読む** |
 | 優先度 | MUST |
 
-SCR-01 を開いた時点で、当日のタンパク質達成状況・今月のトレーニング回数・選択期間の実施状況を表示する。取得は RPC 1回。
+SCR-01（ダッシュボード）を開いた時点で、当日のタンパク質達成状況・今月のトレーニング回数・選択期間の実施状況を表示する。取得は RPC 1回。
 
 | 観点 | 方針 |
 |---|---|
@@ -171,7 +173,7 @@ final json = await supabase.rpc('get_dashboard', params: {
 | `training_count` | RPC の値をそのまま使う。「N / 12 回」の形で表示する |
 | `heatmap[]` | RPC の値をそのまま使う |
 
-- `target_g` / `rate_pct` を SQL で計算しない。RULE-001 を SQL に複製しないため（確定・§10-12）。
+- `target_g` / `rate_pct` を SQL で計算しない。RULE-001（必要タンパク質量 ＝ 体重 × 2g）を SQL に複製しないため（確定・§10-12）。
 - **契約は変わらない。** `protein_gauge` は元から素の値（`weight_kg`・`intake_g`）だけを返している。
 - `heatmap` は **`is_done` が1件以上 true の日だけ**を返す（塗らない日は要素を返さない）。
 - 未実施セルは Flutter が表示範囲から補完する。
@@ -259,7 +261,7 @@ resolveDateRange(period, now, timeZone):                    # L5・案A（確定
 
 - `intake_g` は `protein_g` の**単純合計**とする。掛ける係数は無い。
 - `meal_logs` に個数・倍率の列は存在しない（ADR-0013）。合計は導出値として都度算出する。
-- FEAT-09 と同じ式を使う。画面ごとに違う値にならない。
+- FEAT-09（タンパク質残量と不足分提示）と同じ式を使う。画面ごとに違う値にならない。
 - AI（EXT-01）は使用しない。全てDB集計の決定的処理（NFR-PERF-02）。
 
 ## 5. データアクセス
@@ -333,7 +335,7 @@ GROUP BY u.id, u.weight_kg, u.target_training_count;
 - **ゲージは常に当日**であり、期間切替の影響を受けない（確定・§10-5）。
 - `target_training_count` は RULE-007 の目標回数。`training_count.target` に入れる（L9）。
 - `weight_kg` が NULL なら `protein_gauge` を階層ごと null にする（§5.4）。
-- `target_g` はこの `weight_kg` を FEAT-07 の Dart 関数に渡して求める。
+- `target_g` はこの `weight_kg` を FEAT-07（必要タンパク質量算出）の Dart 関数に渡して求める。
 - SQL で `weight_kg * 2` を計算しない（RULE-001 の重複定義を避ける・確定）。
 
 ### 5.3 Q2: ヒートマップ（期間集約・N+1回避）
@@ -628,7 +630,7 @@ $$;
 
 - [AC] Given 当日の食事記録と体重が登録されている When SCR-01 を開く Then タンパク質ゲージが達成率とともに表示される
 - [AC] Given 摂取量が目標量を超えている When SCR-01 を開く Then 達成率は100%として表示される
-- [AC] Given 体重が未設定である When SCR-01 を開く Then ゲージの位置に体重登録の案内と SCR-05 への導線が示される
+- [AC] Given 体重が未設定である When SCR-01 を開く Then ゲージの位置に体重登録の案内と SCR-05（設定・プロフィール）への導線が示される
 - [AC] Given 体重が未設定である When SCR-01 を開く Then ヒートマップとトレーニング回数は通常どおり表示される
 - [AC] Given 今月にトレーニング実施日がある When SCR-01 を開く Then 「今月のトレーニング N / 12 回」が表示される
 - [AC] Given 期間内にトレーニング実施日がある When ヒートマップの実施日をタップする Then その日の種目名が表示される

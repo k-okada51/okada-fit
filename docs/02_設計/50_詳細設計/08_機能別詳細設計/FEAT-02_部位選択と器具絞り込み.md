@@ -9,6 +9,8 @@ status: draft
 
 > ⚠️ **本書はたたき台（2026-08-02 生成）**。岡田さんのレビューで確定する。
 
+> 📖 ID（`FEAT-` `NFR-` `RULE-` 等）の意味は [ID早見表](../../00_ID早見表.md) を参照。
+
 ## 目次
 1. [概要](#1-概要)
 2. [処理フロー](#2-処理フロー)
@@ -285,7 +287,7 @@ enum BodyPart {
 
 - 部位は5値ちょうど。5値以外（「腹」「全身」等）は DB の CHECK 制約でも拒否される（`../01_DB物理設計.md §3`）。
 - アプリと DB の二重防御になる。
-- **畳み込みのキーは `training_machines.id`。名前で畳まない。** 同名の別マシンが同一ジムに2台ある運用を潰さないため（FEAT-01 §10 #4）。
+- **畳み込みのキーは `training_machines.id`。名前で畳まない。** 同名の別マシンが同一ジムに2台ある運用を潰さないため（FEAT-01（器具登録）§10 #4）。
 - 整列は `gymName` → `name` → `id` の昇順。器具が複数の種目を持つため、`menuName` を第2キーにできない。
 - 器具内の `menus` の整列は RULE-003 の部位順 → 種目名の昇順とする。`Set` や取得順に依存させない。
 - PostgREST の `.order()` は DB の照合順序（`lc_collate`）に依存し、環境差が出る。
@@ -459,7 +461,7 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 - `42501` の HTTP は認証済みなら 403、未認証なら 401 になる。どちらも同じ ERR に写す。
 - 写像の正本は `../07_実装共通設計パターン.md §1`。本書では再定義しない。
 - `details`・`hint` が返るかは `client-error-verbosity` 設定に依る（同 §1）。本機能は使わない。
-- ERRドメイン `ERR-MACHINE-*` は FEAT-01 と共有する。**FEAT-02 は 020〜039 の範囲のみ**を使う（001〜019 は FEAT-01）。
+- ERRドメイン `ERR-MACHINE-*` は FEAT-01（器具登録）と共有する。**FEAT-02 は 020〜039 の範囲のみ**を使う（001〜019 は FEAT-01）。
 - 中間テーブル化で FEAT-02 側の ERR は増えない。参照系のままで、追加の検証が生じないため。
 - ジム絞り込みでも ERR は増えない。既存の ERR-MACHINE-022 を確定にしただけである。
 - 器具0件は**エラーではない**（`total: 0`）。`ERR-MACHINE-*` を割り当てない（§10 #1）。
@@ -481,7 +483,7 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 
 - 「再試行」ボタンは `retryable: true` のときだけ出す。
 - 0件で［メニュー生成］を押せなくする理由は、AI に渡す情報が無いためである。
-- 呼んでも自重種目しか出ず、EXT-01 の課金だけが発生する（FEAT-03 §7）。
+- 呼んでも自重種目しか出ず、EXT-01（Google Gemini API）の課金だけが発生する（FEAT-03 §7）。
 
 ### ジムの選択
 
@@ -522,7 +524,7 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 | 対処 | **世代カウンタ**で古い応答を捨てる。要求ごとに採番し、応答時に最新かを照合する |
 | 往復 | 中断しない。捨てるのは描画だけ |
 
-- SCR-02 と SCR-03 で `BodyPartFilter` と `MachineListView` を共有する。
+- SCR-02（器具登録）と SCR-03（トレーニング）で `BodyPartFilter` と `MachineListView` を共有する。
 - 違いは選択UI（チェックボックスの有無）だけ。`selectable` フラグで切り替える。
 
 ## 8. 実装単位
