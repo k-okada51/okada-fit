@@ -42,7 +42,9 @@ status: draft
 | 性能目標 | NFR-PERF-03（AIメニュー提案 ≤15秒）。不達時は NFR-AVAIL-05 の縮退（記録・閲覧は継続） |
 | 状態 | 状態を持たない（ST-01/ST-02 は FEAT-04 のトレーニング明細が持つ） |
 | 優先度 | MUST |
-| AI利用 | あり（生成のみ）。部位→器具の絞り込みは決定的処理で AI 不使用（RULE-004） |
+| AI利用 | あり（**登録済み種目の選択と順序付け**・ADR-0021）。部位→器具の絞り込みは決定的処理で AI 不使用（RULE-004） |
+
+**本機能は「登録済みの種目から、今日やる分を選んで順番を決める」**（ADR-0021）。種目名とやり方は AI に書かせない。
 
 利用者の操作は4ステップ。
 
@@ -51,7 +53,7 @@ status: draft
 | 1 | SCR-03 でジムと部位を選ぶ | FEAT-02 が該当する器具リストを返す（PostgREST・AI不使用） |
 | 2 | 使う器具を選ぶ | Flutter 内の選択状態のみ。通信しない |
 | 3 | ［メニュー生成］を押す | Edge Function `generate-menu` を1回だけ呼ぶ |
-| 4 | 提案から［登録］を押す | その1件だけ `training_menus` に INSERT する（FEAT-01 C-06） |
+| 4 | ［この内容で記録する］を押す | 選ばれた `menu_id` の配列（実施順）を FEAT-04 へ渡す |
 
 - 器具が0件のとき③は押せない。前段で非活性にする（§7・FEAT-02 §10 #1）。
 
@@ -61,9 +63,11 @@ Edge Function 側の要点。
 |---|---|
 | AI 呼び出し前に必ず DB 検証する | 器具の実在・所有・部位整合を確認する（§4・§5） |
 | 器具↔種目は多対多 | 中間テーブル `machine_menus` で結ぶ。1台の器具が複数の種目・複数の部位に対応する |
-| AI に渡すのは器具IDではない | DB で解決した器具名・対応種目名（器具ごとに複数）・部位を渡す（§3.2） |
+| AI に渡すのは種目一覧 | DB で解決した `menu_id`・種目名・器具名・部位を渡す（§3.2・ADR-0021） |
+| AI が返すのは選択と順序 | 選んだ種目の `menu_id`・実施順・理由だけ。**種目名とやり方は返させない** |
 | 生成結果は永続化しない | **Edge Function は保存しない。応答を返すだけ**（2026-08-08 決定・§10 #1） |
-| 提案の行き先 | 画面に一覧を出す。利用者が［登録］した1件だけ `training_menus` へ INSERT する |
+| 提案の行き先 | 画面に実施順つきで出す。記録すると FEAT-04 の明細になる |
+| `training_menus` への INSERT | **行わない。** 選ぶ対象が既に登録済みのため（ADR-0021） |
 | 提案履歴 | **テーブルを作らない。** 画面を離れると提案は消える |
 | 非冪等・自動リトライなし | EXT-01 は従量課金。1リクエスト＝1課金 |
 | 二重送信を抑止する | UI の disabled のみで持つ。アプリ側のレート制限は実装しない（§10 #4） |
@@ -99,15 +103,15 @@ sequenceDiagram
   alt 検証NG（件数不一致・部位不一致）
     E-->>F: ERR-MENU-001 / ERR-MENU-002（400）※Gemini API は呼ばない＝課金しない
   else 検証OK
-    E->>E: ⑥ プロンプト構成（純関数・§4）
+    E->>E: ⑥ プロンプト構成（純関数・§4）。種目一覧は menu_id つきで渡す
     E->>G: ⑦ generateContent（response_schema・AbortSignal.timeout）
     alt 成功
       G-->>E: candidates[0].content.parts[0].text（JSON文字列）
-      E->>E: ⑧ JSON パース → zod 検証（§4）。器具の妥当性は検証しない
-      E-->>F: 200 { menus:[{ name, how_to }] }
-      F->>U: ListView にメニュー案を表示（保存しない。［登録］した1件だけ FEAT-01 へ）
-    else 失敗（abort＝504／Gemini API 400・429・5xx・不達／出力不正）
-      E-->>F: ERR-AI-TIMEOUT / ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-QUOTA / ERR-AI-FAIL / ERR-AI-SCHEMA
+      E->>E: ⑧ JSON パース → zod 検証（§4 L6）。menu_id の所属・order の連番を検証
+      E-->>F: 200 { menus:[{ menu_id, order, reason }] }
+      F->>U: 実施順つきの今日のメニューを表示（種目名・やり方は DB の値）
+    else 失敗（abort＝504／Gemini API 400・429・5xx・不達／出力不正／menu_id 不正）
+      E-->>F: ERR-AI-TIMEOUT / ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-QUOTA / ERR-AI-FAIL / ERR-AI-SCHEMA / ERR-MENU-007
       F->>U: SnackBar で通知（記録・閲覧は継続・NFR-AVAIL-05）
     end
   end
@@ -117,10 +121,10 @@ sequenceDiagram
 |---|---|
 | トランザクションを張らない | 書き込みが無い。EXT-01 呼び出しは DB 接続を保持したまま行わない |
 | ⑤ を ⑦ より先に置く | 無効な入力で課金しないため。AI 呼び出しは検証を全通過後に1回だけ |
-| 出力の器具を検証しない | 提案は参考情報と割り切る。除外処理を持たない（§10 #3） |
+| 出力の `menu_id` を検証する | 入力集合の外なら異常として弾く（ERR-MENU-007・§4 L6・ADR-0021） |
 | ① を Edge Function に通さない | 器具の絞り込みは決定的処理（RULE-004）。AI も Function も要らない |
 | ① が0件なら②を発行しない | AI に渡す情報が無い。呼んでも課金だけが発生する（FEAT-02 §10 #1） |
-| 応答を保存しない | 提案は画面の状態にすぎない。採用した1件だけが永続化の対象になる |
+| 応答を保存しない | 提案は画面の状態にすぎない。永続化は FEAT-04 の記録操作で行う |
 
 エラーの分岐条件と ERR 対応は §6 が詳細。
 
@@ -154,9 +158,9 @@ sequenceDiagram
   "machine_ids": [1, 2]              // 必須・整数配列・1件以上・重複なし
 }
 
-// Response 200
+// Response 200（形の正本は §3.2.2）
 {
-  "menus": [ { "name": "string", "how_to": "string" } ]
+  "menus": [ { "menu_id": 1, "order": 1, "reason": "string" } ]   // order 昇順
 }
 
 // Error（共通契約に準拠）
@@ -164,7 +168,8 @@ sequenceDiagram
 ```
 
 - Dart 側に zod は無い。`AiMenu` モデルクラス＋`fromJson` で検証する。
-- **応答に ID は無い。** Edge Function が保存しないため、提案を指す永続的な識別子が存在しない。
+- **種目名・やり方は応答に含まない。** Flutter が `menu_id` で `training_menus` から引く（§7）。
+- **提案そのものを指す ID は無い。** Edge Function が保存しないため（§5）。
 - 提案は Flutter の画面状態としてのみ保持する。画面を離れると消える（§7）。
 - 旧契約 `POST /api/menus/generate`（段3 `02_API設計.md §4.2`）は**廃止**。Edge Function `generate-menu` に置き換わる。
 - 段3の契約表の改訂が要る（§10 #12）。
@@ -201,37 +206,41 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08
 | 区分 | 含めるもの | 由来 |
 |---|---|---|
 | system | 役割（トレーニング指導）。出力は日本語 | 実装方針 |
-| system | **与えた器具リスト内の器具だけを使う**。リストに無い器具・自重種目を提案しない | 実装方針 |
-| system | 件数上限 MENU_MAX。`how_to` は手順とセット・回数の目安を含む粒度 | 実装方針 |
+| system | **与えた種目一覧の中からだけ選ぶ**。一覧に無い種目・自重種目を足さない | ADR-0021 |
+| system | 選んだ種目に実施順を付ける。順は `1..N` の連番 | ADR-0021 |
+| system | 今日やる種目数の上限 MENU_MAX。`reason` は選んだ順の理由を1〜80文字 `[仮]` | ADR-0021 |
 | 入力: 部位 | `body_part`（RULE-003 の5値のうち1つ） | リクエスト |
-| 入力: 器具 | `machine_ids` から DB で解決した `{ machine_id, machine_name, menu_names[] }` の配列 | `training_machines` / `machine_menus` / `training_menus` |
-| 入力: 器具 | **IDだけを渡さず名称を併せて渡す**。IDはモデルにとって意味を持たないため | 同上 |
-| 入力: 既存種目 | 本人・同一部位の `training_menus.name` 一覧（重複提案の抑止用）`[仮]` | `training_menus` |
+| 入力: 種目一覧 | `machine_ids` から DB で解決した `{ menu_id, menu_name, machine_names[] }` の配列 | `training_machines` / `machine_menus` / `training_menus` |
+| 入力: 種目一覧 | **`menu_id` を必ず添える。** AI はこの ID だけを返す（§3.2.2） | ADR-0021 |
+| 入力: 種目一覧 | **IDだけを渡さず名称を併せて渡す**。IDはモデルにとって意味を持たないため | 同上 |
 | 含めないもの | 体重・氏名等の個人属性、`GEMINI_API_KEY`、他ユーザーのデータ | NFR-SEC-02 |
 
-器具1台は複数の種目に対応する（`machine_menus`）。そのため種目名は**器具ごとの配列**になる。
+器具1台は複数の種目に対応する（`machine_menus`）。逆に1種目が複数の器具に対応することもある。
+
+そのため素材は**種目単位の配列**にし、器具名を配列で添える。
 
 ```jsonc
-// 入力: 器具（DBで解決したプロンプト素材。型のみ・実データは書かない）
+// 入力: 種目一覧（DBで解決したプロンプト素材。型のみ・実データは書かない）
 [
   {
-    "machine_id":   "bigint",
-    "machine_name": "string",
-    "menu_names":   ["string"]   // 指定 body_part の種目のみ。1件以上（0件の器具は §5 の検証で落ちる）
+    "menu_id":       "bigint",     // AI が返すのはこの ID（§3.2.2）
+    "menu_name":     "string",     // 指定 body_part の種目のみ
+    "machine_names": ["string"]    // その種目を行える器具。1件以上（0件の種目は §5 の検証で落ちる）
   }
 ]
 ```
 
 | 観点 | 扱い |
 |---|---|
-| 配列の中身 | 要求 `body_part` に一致する種目名だけを入れる。他部位の種目名は渡さない |
-| 順序 | `machine_id` 昇順・`menu_name` 昇順で固定する（プロンプトの再現性のため） |
-| 重複 | 同一器具の同一種目名は1つに畳む（§5 の `DISTINCT`） |
+| 配列の中身 | 要求 `body_part` に一致する種目だけを入れる。他部位の種目は渡さない |
+| 順序 | `menu_id` 昇順・`machine_name` 昇順で固定する（プロンプトの再現性のため） |
+| 重複 | 同一 `menu_id` は1つに畳む（§5 の `DISTINCT`） |
 
-> ⚠️ 要確認（人間判断）: **FEAT-03 に期待する価値を確定させたい（§10 #2）。**
-> - 「器具名＋対応種目名」を渡す設計では、`machine_menus` から既に種目名が引ける。
-> - そのため AI の付加価値が実質 `how_to` の文章生成と組合せ提案に限定される。
-> - 確定させる論点は、新種目の発見か／やり方の説明か。
+> ~~⚠️ 要確認（人間判断）: **FEAT-03 に期待する価値を確定させたい（§10 #2）。**~~（**解決**・ADR-0021）
+> - ~~「器具名＋対応種目名」を渡す設計では、`machine_menus` から既に種目名が引ける。~~
+> - ~~そのため AI の付加価値が実質 `how_to` の文章生成と組合せ提案に限定される。~~
+> - **登録済み種目から今日やる分を選び、実施順を決める機能に確定した**（ADR-0021）。
+> - 種目名とやり方は AI に書かせない。`training_menus` から引く。
 
 #### 3.2.2 出力（`response_schema`）
 
@@ -247,10 +256,11 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08
       "items": {
         "type": "object",
         "properties": {
-          "name":   { "type": "string" },       // 種目名・1〜60文字 [仮]
-          "how_to": { "type": "string" }        // やり方・1〜400文字 [仮]
+          "menu_id": { "type": "integer" },   // 入力で渡した種目のID
+          "order":   { "type": "integer" },   // 実施順。1..N の連番
+          "reason":  { "type": "string" }     // この順にした理由・1〜80文字 [仮]
         },
-        "required": ["name", "how_to"]
+        "required": ["menu_id", "order", "reason"]
       }
     }
   },
@@ -258,9 +268,11 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08
 }
 ```
 
-- **検証用の `machine_id` は返させない**（2026-08-08 決定・§10 #3）。器具の妥当性は検証しない。
+- **`name` と `how_to` は返させない**（ADR-0021）。種目名とやり方は `training_menus` から引く。
+- **`menu_id` は入力で渡した集合の中にしか存在しない。** 集合外は ERR-MENU-007（§3.3・§4 L6）。
+- `order` は `1..N` の連番。欠番・重複も ERR-MENU-007 で弾く。
 - そのため `response_schema` は §3.1 の Response 200 と同じ形になる。
-- 件数上限 MENU_MAX の決め方は §4 L3 が正本。
+- 件数上限 MENU_MAX は「**今日やる種目の数**」の上限。決め方は §4 L3 が正本。
 
 ### 3.3 バリデーション規則
 | 項目 | 規則 | 違反時 |
@@ -271,16 +283,24 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08
 | `machine_ids` の実在・所有 | 全IDが本人参照可能な `training_machines` に存在（RLS 経由で件数一致） | ERR-MENU-001 (400) |
 | `machine_ids` と `body_part` の整合 | 全器具が `machine_menus` 経由で**指定部位の種目を1つ以上持つ**（RULE-004）。全種目が指定部位である必要はない | ERR-MENU-002 (400) |
 | AI出力 | `JSON.parse` に成功し、zod スキーマを満たす | ERR-AI-SCHEMA (502) |
+| AI出力 `menu_id` の所属 | 返された全 `menu_id` が入力で渡した種目集合に含まれる（ADR-0021） | ERR-MENU-007 (502) |
+| AI出力 `menu_id` の重複 | 同一 `menu_id` を2回返さない | ERR-MENU-007 (502) |
+| AI出力 `order` の連番 | `1..N` の連番であり、欠番・重複が無い | ERR-MENU-007 (502) |
+
+- ERR-MENU-007 の3件は**入力集合との照合**である（§4 L6）。
+- 集合外の ID は検出できる異常として弾く。参考情報として通さない。
+- `retryable` は `false`。同じ入力で再送しても直らない（§6）。
 
 Edge Function 側で行わない検証を明示する。
 
 | 行わない検証 | 理由 | ERR-ID |
 |---|---|---|
 | 生成回数の上限 | アプリ側のレート制限を実装しない（§10 #4） | ERR-MENU-003 は**欠番** |
-| AI出力の器具整合 | 幻覚を除外しない（§10 #3）。提案は参考情報とする | ERR-MENU-005 は**欠番** |
+| AI出力の器具整合 | 旧「AI出力の器具整合」で検証対象が違う。`menu_id` の所属は ERR-MENU-007 で受ける | ERR-MENU-005 は**欠番** |
 | 多重実行の検知 | UI の disabled で抑止する（§7） | ERR-MENU-006 は**欠番** |
 
 - 上の3件は**採番を変えずに残す。** 他の ERR-ID を繰り上げない（§6）。
+- **欠番は再利用しない**（`../../../01_要件定義/00_用語定義.md §3`）。過去の参照の意味を変えないため。
 - `ERR-MENU-004` も**欠番**。構造化出力の失敗は共通の `ERR-AI-SCHEMA` で受ける（ADR-0011・§6）。
 
 ## 4. 業務ロジック
@@ -288,15 +308,19 @@ Edge Function 側で行わない検証を明示する。
 | # | ロジック | 内容 | 対応 |
 |---|---|---|---|
 | L1 | 部位・器具の整合判定 | 選択器具が `machine_menus` 経由で要求部位の種目を**1つ以上持つ**ことを DB 照会結果で判定。AI は使わない。判定は器具単位に畳んでから行う（§5） | RULE-004 |
-| L2 | プロンプト構成 | 部位・器具名・対応種目名（器具ごとの配列）・既存種目名を素材に system/prompt を組む。件数上限と「与えた器具のみ使用」制約を明示 | RULE-006 |
-| L3 | 生成件数の決定 | `提案件数上限 = min(選択器具数, MENU_MAX)`（MENU_MAX 既定5 `[仮]`）。器具数を超える提案は求めない | NFR-PERF-03（トークン量抑制） |
+| L2 | プロンプト構成 | 部位・器具名・**種目一覧（`menu_id` つき）**を素材に system/prompt を組む。指示は「**この中から今日やる分を選び、実施順を決めよ**」。件数上限を明示 | RULE-006・ADR-0021 |
+| L3 | 今日やる種目数の決定 | `今日やる種目数の上限 = min(候補種目数, MENU_MAX)`（MENU_MAX 既定5 `[仮]`）。候補を超える数は求めない | NFR-PERF-03（トークン量抑制） |
+| L6 | AI出力の照合 | 返された `menu_id` が入力集合に含まれること・重複が無いこと・`order` が `1..N` の連番であることを検証する。違反は ERR-MENU-007 | ADR-0021 |
 
 持たないロジックを明示する。**L4・L5 は欠番**とし、以降の採番を繰り上げない。
 
 | # | 持たないロジック | 理由 |
 |---|---|---|
-| L4 | 幻覚フィルタ（AI出力の器具整合による除去） | 除外しない方針で確定（§10 #3） |
+| L4 | 幻覚フィルタ（AI出力の器具整合による除去） | **除去すべき対象が存在しない。** AI は入力で渡した `menu_id` の集合からしか選べない（ADR-0021） |
 | L5 | 再生成抑止キー（同一入力のキャッシュ） | 保存先を持たない。抑止は UI と日次クォータに委ねる（§10 #4） |
+
+- L4 と L6 は別物である。L4 は「除去」、L6 は「異常として弾く」。
+- L6 は除去しない。1件でも集合外なら応答全体を ERR-MENU-007 にする。
 
 境界値:
 
@@ -304,19 +328,24 @@ Edge Function 側で行わない検証を明示する。
 |---|---|---|
 | `machine_ids` 件数 | 0 / 1 / MACHINE_MAX / MACHINE_MAX+1 | 400 / OK / OK / 400 |
 | AI 出力 `menus` 件数 | 0 / 1 / MENU_MAX / MENU_MAX+1 | ERR-AI-SCHEMA / OK / OK / ERR-AI-SCHEMA |
+| AI 出力 `menu_id` | 入力集合内 / 集合外 / 重複 | OK / ERR-MENU-007 / ERR-MENU-007 |
+| AI 出力 `order` | `1..N` の連番 / 欠番・重複 | OK / ERR-MENU-007 |
 | AI 応答時間 | timeout 未満 / 超過 | 200 / ERR-AI-TIMEOUT |
 
 純関数として切り出す（Deno 側・単体テスト対象・NFR-QUAL-01）:
-- `groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]`（器具×種目の行を `machine_id` で畳み `menu_names[]` にする・L1/L2 の前段）
+- `groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]`（器具×種目の行を `machine_id` で畳む・L1 の前段）
+- `buildMenuCandidates(rows: MachineMenuRow[]): MenuCandidate[]`（同じ行を `menu_id` で畳みプロンプト素材にする・L2 の前段）
 - `buildMenuPrompt(input: MenuPromptInput): { system: string; prompt: string }`（L2）
-- `resolveSuggestionCount(machineCount: number): number`（L3）
+- `resolveSuggestionCount(candidateCount: number): number`（L3）
+- `verifySelection(output: AiMenuOutput, candidateIds: number[]): void`（L6・違反時に ERR-MENU-007 を投げる）
 
 ## 5. データアクセス
 
 ```sql
--- (1) machine_ids の実在・所有・部位整合をまとめて検証し、プロンプト素材（名称）を解決する
+-- (1) machine_ids の実在・所有・部位整合をまとめて検証し、プロンプト素材を解決する
 --     器具↔種目は多対多（machine_menus）。1台が同一部位の種目を複数持つと行が複数返る
 --     DISTINCT machine_id の件数が $1 の要素数と一致しなければ ERR-MENU-001 / ERR-MENU-002
+--     menu_id は AI に渡す候補集合の ID になる（ADR-0021）
 SELECT DISTINCT
        tm.id   AS machine_id,
        tm.name AS machine_name,
@@ -330,15 +359,12 @@ WHERE  tm.id       = ANY($1::bigint[])
   AND  m.user_id   = $2
   AND  m.body_part = $3
 ORDER BY tm.id, m.name;
-
--- (2) 重複提案の抑止用に、本人・同一部位の既存種目名を取得する [仮]
-SELECT name
-FROM   training_menus
-WHERE  user_id   = $1
-  AND  body_part = $2;
 ```
 
-Edge Function 内では上記2本を PostgREST 経由の埋め込み select として発行する `[仮]`（SQL は意図の記述であり、生SQLを発行するという意味ではない）。
+Edge Function 内では上記を PostgREST 経由の埋め込み select として発行する `[仮]`（SQL は意図の記述であり、生SQLを発行するという意味ではない）。
+
+- **重複提案の抑止用クエリは不要になった。** 候補集合そのものが (1) の結果だから（ADR-0021）。
+- Edge Function が集めるのは `menu_id` つきの種目一覧である。これがそのまま AI への入力になる。
 
 (1) は**器具×種目の行**を返す。器具単位の判定は畳んでから行う。
 
@@ -356,6 +382,17 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 - 切り分けが要るなら (1) を実在確認と部位確認の2本に分ける（§10 #15）。
 
 `ORDER BY` は §3.2 のプロンプト素材の順序を固定するために置く。
+
+`menu_id` は提案から記録まで貫通する（ADR-0021）。
+
+| 段 | `menu_id` の役割 |
+|---|---|
+| (1) の結果 | AI に渡す候補集合。プロンプト素材の ID（§3.2.1） |
+| AI の出力 | 選んだ種目の指し先。集合外は ERR-MENU-007（§4 L6） |
+| FEAT-04 | `training_session_details`（DM-07）の明細にそのまま入る |
+
+- 明細は `uq_tsd_session_menu`（`session_id`, `menu_id`）に自然に収まる。
+- 突き合わせの変換が要らない。同じ ID のまま渡す。
 
 | 観点 | 内容 |
 |---|---|
@@ -377,8 +414,9 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | トランザクション境界 | なし（参照のみ）。EXT-01 呼び出しは DB 接続を保持したまま行わない |
 | 永続化 | **提案結果は保存しない**（2026-08-08 決定・§10 #1） |
 | 提案履歴のテーブル | **作らない。** 画面を離れると提案は消える |
-| 採用時の委譲先 | FEAT-01（`training_menus` への PostgREST insert）／FEAT-04（RPC `create_training_session`） |
-| 採用の単位 | 利用者が［登録］した1件ずつ。一括保存は行わない |
+| 受け渡し先 | FEAT-04（RPC `create_training_session`）。`menu_id` の配列（実施順）を渡す |
+| `training_menus` への INSERT | **行わない**（ADR-0021）。選ぶ対象が既に登録済みのため |
+| 記録の単位 | 選ばれた種目をまとめて明細にする。`is_done = false`（ST-01）で作成する |
 
 - (1) の `$2` は `auth.uid()`（uuid）。RLS が同じ条件を強制するため、JOIN 条件は二重防御になる。
 
@@ -397,8 +435,9 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | ERR-MENU-002 | 400 | 器具が選択部位の種目を1つも持たない（RULE-004違反） | 部位と器具の組合せを直す旨 | false | warn |
 | ERR-MENU-003 | — | **欠番。** アプリ側レート制限を実装しないため使わない（§10 #4） | — | — | — |
 | ERR-MENU-004 | — | **欠番。** 構造化出力の失敗は共通の `ERR-AI-SCHEMA` で受ける（ADR-0011・§10 #7） | — | — | — |
-| ERR-MENU-005 | — | **欠番。** 幻覚を除外しないため使わない（§10 #3） | — | — | — |
+| ERR-MENU-005 | — | **欠番。** 旧「AI出力の器具整合」で検証対象が違う。再利用しない（§3.3・ADR-0021） | — | — | — |
 | ERR-MENU-006 | — | **欠番。** 多重実行の検知を実装しないため使わない（§10 #4） | — | — | — |
+| ERR-MENU-007 | 502 | AI が入力集合に無い `menu_id` を返した、`menu_id` が重複した、`order` が `1..N` の連番でない（ADR-0021） | 生成に失敗した旨 | false | error（返された `menu_id` の件数と入力集合の件数。本文は残さない） |
 | ERR-AI-CREDIT | 402 | Gemini API が課金無効・請求未設定で拒否（**400 `failed_precondition`**・ADR-0011） | 一時的に利用できない旨 | false | error（要運用通知） |
 | ERR-AI-RATE | 429 | Gemini API の分/秒あたりのレート制限（**429 `rate_limit_exceeded`**・ADR-0011） | 時間をおいて再試行する旨 | true（指数バックオフ） | warn |
 | ERR-AI-QUOTA | 429 | Gemini API の日次クォータ超過（429 `quota_exceeded`・ADR-0011）。**コスト暴走を止める唯一の層** | 当日は回復しない旨 | false | error（要運用通知） |
@@ -412,6 +451,7 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | 出力先 | Supabase Edge Function ログ（`console.log` の1行1JSON）。`service` は `okada-fit-fn` |
 | 縮退 | 402/429/500/502/504 のいずれでも、SCR-03 の記録・閲覧機能は動作を継続する（NFR-AVAIL-05） |
 | 欠番 | ERR-MENU-003 / 004 / 005 / 006 は**採番を残したまま使わない**。他の ERR-ID を繰り上げない |
+| 欠番の再利用 | **禁止**（`../../../01_要件定義/00_用語定義.md §3`）。`menu_id` の照合には新設の ERR-MENU-007 を使う |
 | 429 の2種 | `rate_limit_exceeded` は待てば通る。`quota_exceeded` は当日回復しない。`error.status` で判別する |
 | 縮退の範囲 | 代替経路を持たない。Gemini API が落ちれば FEAT-03 は全停止する（§10 #6） |
 
@@ -435,12 +475,15 @@ Flutter ウィジェットで記述する。
 | 器具0件（部位選択済・該当器具なし） | `MaterialBanner`（黄系）で器具未登録を案内し、SCR-02 器具登録への導線を出す | **［メニュー生成］は `onPressed: null`**（2026-08-08 決定・無駄な課金を防ぐ） |
 | 器具選択済 | `Wrap` に `FilterChip` を並べ複数選択。選択数を表示 | ［メニュー生成］有効 |
 | 読込中 | ボタン内を `CircularProgressIndicator`（サイズ固定）に差し替え、提案領域中央にも `CircularProgressIndicator`。最長15秒（NFR-PERF-03） | ボタンは `onPressed: null`（二重送信＝二重課金の抑止） |
-| 成功 | `ListView.builder` ＋ `ExpansionTile`（`name` をタイトル、`how_to` を展開内容）。件数が MENU_MAX 未満でもそのまま表示 | 各行に［登録］（FEAT-01 C-06）／［今日の記録に追加］（FEAT-04）。［再生成］は課金する旨を添える |
+| 成功 | **今日のメニューを実施順で表示**。`ListView.builder` ＋ `ExpansionTile`（`order` と種目名をタイトル、`how_to` を展開内容）。件数が MENU_MAX 未満でもそのまま表示 | ［この内容で記録する］（FEAT-04）。［再生成］は課金する旨を添える |
 | エラー | `ScaffoldMessenger.showSnackBar`（赤系・`message` は §6 の利用者向けメッセージ）。提案領域は直前の状態を保持 | 再試行可否は `retryable` に従う。器具選択・記録操作は継続可（NFR-AVAIL-05） |
 | クォータ超過 | `ScaffoldMessenger.showSnackBar`（橙系）で当日は回復しない旨（ERR-AI-QUOTA） | ボタンは押せるが再び失敗する。記録・閲覧は継続可 |
 
 - **アプリ側で回数を数えて止めることはしない**（§10 #4）。抑止は disabled と日次クォータの2層。
-- 提案に器具の妥当性の保証は無い。参考情報である旨を一覧の先頭に添える `[仮]`（§10 #17）。
+- **種目名とやり方は `training_menus` から引いた値を出す**（ADR-0021）。AI の生成文は出さない。
+- 応答は `menu_id` の並びである。Flutter は候補一覧の値と突き合わせて表示する（§8）。
+- 出るのは登録済みの種目だけ。使えない種目は表示されない（§10 #17）。
+- `how_to` が未記入の種目の扱いは未確定（§10 #21）。
 - 進捗率は出せない（Edge Function がストリームを返さないため）。`CircularProgressIndicator` は不定形（`value: null`）で使う。
 - 画面遷移は起こさない。SCR-03 内で完結する。
 
@@ -450,11 +493,12 @@ Flutter ウィジェットで記述する。
 |---|---|
 | 保持場所 | `MenuGeneratePanel` の `State` のみ。DB にも端末にも保存しない |
 | 消えるとき | 画面を離れたとき・再生成したとき |
-| 残るもの | 利用者が［登録］した種目だけ（`training_menus` の1行） |
+| 残るもの | 記録したときの `training_session_details` の明細だけ（FEAT-04） |
 | 復元 | できない。同じ提案を得るには再生成＝再課金になる |
 
-- ［登録］は行ごとに1回。押した行にはチェックを表示し、二重登録を防ぐ `[仮]`。
-- 未登録の提案が残ったまま画面を離れるとき、確認を出すかは `[仮]`。
+- ［この内容で記録する］は1回だけ。押すと `menu_id` の配列（実施順）を FEAT-04 へ渡す。
+- 押した後はボタンを無効化し、二重記録を防ぐ `[仮]`。
+- 記録せずに画面を離れるとき、確認を出すかは `[仮]`。
 
 ## 8. 実装単位
 | # | ファイル | 役割 | 主なシグネチャ |
@@ -462,11 +506,11 @@ Flutter ウィジェットで記述する。
 | 1 | `supabase/functions/generate-menu/index.ts` | Edge Function 本体。JWT検証→入力検証→DB検証→Gemini→整形 | `Deno.serve(async (req: Request): Promise<Response> => { ... })` |
 | 2 | `supabase/functions/generate-menu/schema.ts` | 入力 zod スキーマ・AI出力 zod スキーマ・`response_schema` 定義 | `export const GenerateMenuRequestSchema` / `export const AiMenuOutputSchema` / `export const AI_MENU_RESPONSE_SCHEMA` |
 | 3 | `supabase/functions/generate-menu/prompt.ts` | プロンプト構成（純関数・§4 L2） | `export function buildMenuPrompt(input: MenuPromptInput): { system: string; prompt: string }` |
-| 4 | `supabase/functions/generate-menu/validate.ts` | 器具×種目行の畳み込み・件数決定（純関数・§4 L1/L3） | `export function groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]` / `export function resolveSuggestionCount(machineCount: number): number` |
+| 4 | `supabase/functions/generate-menu/validate.ts` | 畳み込み・候補生成・件数決定・AI出力の照合（純関数・§4 L1/L2/L3/L6） | `export function groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]` / `export function buildMenuCandidates(rows: MachineMenuRow[]): MenuCandidate[]` / `export function resolveSuggestionCount(candidateCount: number): number` / `export function verifySelection(output: AiMenuOutput, candidateIds: number[]): void` |
 | 5 | `supabase/functions/_shared/gemini.ts` | Gemini API 呼び出しの共通ラッパ（モデル設定値・`AbortSignal.timeout`・エラー写像）。**FEAT-08 と共有し重複実装しない** | `export async function generateStructured<T>(args: GenerateStructuredArgs<T>): Promise<T>` |
 | 6 | `supabase/functions/_shared/supabase-client.ts` | 呼び出し元 JWT を引き継いだクライアント生成（§5） | `export function createUserClient(req: Request): SupabaseClient` |
 | 7 | `app/lib/features/training/menu_generate_panel.dart` | SCR-03 の生成パネル（§7 の状態遷移） | `class MenuGeneratePanel extends StatefulWidget` |
-| 8 | `app/lib/features/training/ai_menu.dart` | 応答のモデルクラス（Dart 側の検証）。**永続化しない画面状態**（§7） | `class AiMenu { factory AiMenu.fromJson(Map<String, dynamic> json); }` |
+| 8 | `app/lib/features/training/ai_menu.dart` | 応答のモデルクラス（`menu_id`・`order`・`reason`）。種目名とやり方は DB の値と突き合わせる。**永続化しない画面状態**（§7） | `class AiMenu { factory AiMenu.fromJson(Map<String, dynamic> json); }` |
 | 9 | `app/lib/data/menu_repository.dart` | `functions.invoke('generate-menu')` の呼び出しと `FunctionException` の写像 | `Future<List<AiMenu>> generateMenu({required BodyPart bodyPart, required List<int> machineIds})` |
 
 - **レート制限のモジュールは作らない**（旧 `_shared/rate-limit.ts`）。実装しない方針で確定（§10 #4）。
@@ -474,7 +518,7 @@ Flutter ウィジェットで記述する。
 ## 9. テスト観点
 | TC-ID | 観点 | 期待 |
 |---|---|---|
-| TC-FEAT03-01 | 正常系（部位＋器具1件以上、AIが有効な出力を返す） | 200・`menus` が1件以上・各要素に `name` と `how_to` |
+| TC-FEAT03-01 | 正常系（部位＋器具1件以上、AIが有効な出力を返す） | 200・`menus` が1件以上・各要素に `menu_id` と `order` と `reason` |
 | TC-FEAT03-02 | 未認証（JWT 無し・失効） | 401・ERR-AUTH-001・**EXT-01 を呼ばない** |
 | TC-FEAT03-03 | 入力不正（`body_part` enum 外／`machine_ids` が空・重複・上限超） | 400・ERR-VALIDATION-001・EXT-01 を呼ばない |
 | TC-FEAT03-04 | 他人所有の器具ID／存在しないID | 400・ERR-MENU-001・EXT-01 を呼ばない |
@@ -484,29 +528,35 @@ Flutter ウィジェットで記述する。
 | TC-FEAT03-09 | Gemini API が 429 の2種／400 `failed_precondition` を返す | ERR-AI-RATE（true）／ERR-AI-QUOTA（false）／ERR-AI-CREDIT（false） |
 | TC-FEAT03-10 | Gemini API へ不達（DNS・接続失敗・5xx） | 500・ERR-AI-FAIL。同一セッションで記録・閲覧は 200（NFR-AVAIL-05） |
 | TC-FEAT03-12 | 応答時間・副作用 | 正常系 ≤15秒（NFR-PERF-03）。成功/失敗いずれでも `training_menus` の行数が増えない |
-| TC-FEAT03-13 | 純関数 `buildMenuPrompt` | 器具名・種目名・部位・件数上限が構成物に含まれ、個人属性が含まれない |
+| TC-FEAT03-13 | 純関数 `buildMenuPrompt` | `menu_id` つきの種目一覧・器具名・部位・件数上限が構成物に含まれ、個人属性が含まれない |
 | TC-FEAT03-14 | service role の不使用 | Edge Function が他人の `machine_ids` を渡されたとき ERR-MENU-001 になる（RLS が効いている） |
-| TC-FEAT03-15 | 複数部位に対応する器具（指定部位の種目と他部位の種目を併せ持つ） | 200。プロンプト素材の `menu_names` は**指定部位の種目のみ**を含む |
+| TC-FEAT03-15 | 複数部位に対応する器具（指定部位の種目と他部位の種目を併せ持つ） | 200。プロンプト素材の種目一覧は**指定部位の種目のみ**を含む |
 | TC-FEAT03-16 | 1台が同一部位の種目を複数持つ | 器具は重複せず1件として扱われる（`DISTINCT machine_id` で畳む・§5） |
 | TC-FEAT03-17 | 対応種目が0件の器具を指定 | 400・ERR-MENU-001・EXT-01 を呼ばない |
 | TC-FEAT03-18 | 前段の器具が0件 | ［メニュー生成］が非活性。`functions.invoke` が発行されない（FEAT-02 §10 #1） |
 | TC-FEAT03-19 | 提案を保存しない | 200 の後も `training_menus` の行数が増えない。提案履歴のテーブルも参照しない |
-| TC-FEAT03-20 | 提案から［登録］ | 押した1件だけが `training_menus` に INSERT される。他の提案は保存されない |
+| TC-FEAT03-20 | ［この内容で記録する］ | `training_menus` に INSERT されない。FEAT-04 へ `menu_id` の配列が渡る |
 | TC-FEAT03-21 | 画面を離れる | 再表示しても提案は残らない。復元の経路が無い |
-| TC-FEAT03-22 | AI 出力が要求外の器具に言及する | **除去しない。** そのまま 200 で返る（§10 #3） |
+| TC-FEAT03-22 | AI 出力が要求外の器具・種目に言及する | 種目は `menu_id` でしか返せない。集合外なら ERR-MENU-007（§4 L6） |
 | TC-FEAT03-23 | 送信中の二重タップ | `functions.invoke` は1回しか発行されない（§7・UI の disabled） |
+| TC-FEAT03-24 | 返された `menu_id` の所属 | 応答の全 `menu_id` が §5 (1) の候補集合に含まれる |
+| TC-FEAT03-25 | AI が入力集合に無い `menu_id` を返す | 502・ERR-MENU-007・`retryable: false`・自動リトライしない |
+| TC-FEAT03-26 | `order` の連番 | 応答の `order` が `1..N` の連番・重複なし。違反は ERR-MENU-007 |
+| TC-FEAT03-27 | FEAT-04 への受け渡し | 選ばれた `menu_id` がそのまま `training_session_details` の明細になる（`uq_tsd_session_menu`） |
 
 - **TC-FEAT03-06（幻覚の除去）と TC-FEAT03-11（レート制限到達）は欠番。** 該当処理を実装しない。
 - 欠番の分を繰り上げず、以降の TC-ID もそのまま維持する。
+- TC-FEAT03-24〜27 は ADR-0021 に伴う追加。既存の TC-ID は繰り上げない。
 
 受入基準（G/W/T）の候補:
-- [AC] Given 部位「胸」に対応する器具が登録済み When 器具を選んで［メニュー生成］を押す Then 15秒以内にメニュー案が1件以上表示される
+- [AC] Given 部位「胸」に対応する器具が登録済み When 器具を選んで［メニュー生成］を押す Then 15秒以内に今日のメニューが実施順つきで1件以上表示される
 - [AC] Given 選択部位に対応する器具が0件 When SCR-03 を表示する Then ［メニュー生成］は押せず、器具登録（SCR-02）への導線が表示される
 - [AC] Given 選択した器具が要求部位の種目を1つも持たない When 生成を要求する Then ERR-MENU-002 が返り AI は呼び出されない
-- [AC] Given 1台で複数部位に対応する器具を選んでいる When 部位「胸」で生成を要求する Then 胸の種目だけを素材にメニュー案が生成される
+- [AC] Given 1台で複数部位に対応する器具を選んでいる When 部位「胸」で生成を要求する Then 胸の種目だけを候補に今日のメニューが組まれる
 - [AC] Given Gemini API が不達 When 生成を要求する Then エラーが通知されるが、トレーニング記録と閲覧は継続して行える
-- [AC] Given メニュー案が表示された When 何も採用操作をしない Then 種目マスタには何も追加されない
-- [AC] Given メニュー案が表示された When 1件だけ［登録］を押す Then その1件だけが種目マスタに追加される
+- [AC] Given 今日のメニューが表示された When 何も操作をしない Then 種目マスタには何も追加されない
+- [AC] Given 今日のメニューが表示された When ［この内容で記録する］を押す Then 選ばれた種目が実施順どおり明細になり、種目マスタは増えない
+- [AC] Given AI が候補集合に無い `menu_id` を返した When 生成を要求する Then ERR-MENU-007 が返り、提案は表示されない
 - [AC] Given メニュー案が表示された When 画面を離れて戻る Then 提案は残っていない
 
 > 受入基準・ST・ERR の**正本は段6**（`../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`・本PR対象外）。本節はその母集合への入力。
@@ -515,11 +565,14 @@ Flutter ウィジェットで記述する。
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
 | 1 | ~~提案メニューの保存先が未定義~~（**解決**） | **2026-08-08 決定。保存しない。** Edge Function は応答を返すだけで、DB に書かない（§5） | — |
-| 〃 | 〃 | 画面に一覧を出し、利用者が［登録］した1件だけ `training_menus` に INSERT する（§7・FEAT-01 C-06） | — |
-| 〃 | 〃 | **提案履歴のテーブルは作らない。** 画面を離れると提案は消える。マスタ汚染は採用操作を挟むことで避ける | — |
-| 2 | AI に渡す情報の粒度 | `machine_menus` から種目名を逆引きできるため、「部位＋器具名＋既存種目名」を渡すと既知種目の再掲になりやすい。多対多化で1器具あたりの種目名が増え傾向は強まる。渡す粒度で出力の性格が変わるが FEAT-03 の狙いが未定義 | 🟡 中 |
-| 3 | ~~幻覚の残存~~（**解決**） | **2026-08-08 決定。除外しない。** 提案は参考情報として扱う。検証用 `machine_id` も事後フィルタも持たない（§3.2.2・§4） | — |
-| 〃 | 〃 | 利用者は自分のジムの器具を知っている。使えない提案は無視できるため、除去の実装に見合わないと判断した | — |
+| 〃 | 〃 | ~~画面に一覧を出し、利用者が［登録］した1件だけ `training_menus` に INSERT する~~ → **INSERT は行わない**（ADR-0021）。選ばれた `menu_id` を FEAT-04 へ渡す（§7） | — |
+| 〃 | 〃 | **提案履歴のテーブルは作らない。** 画面を離れると提案は消える。マスタへの書き込みが無いため汚染も起きない | — |
+| 2 | ~~AI に渡す情報の粒度~~（**解決**） | **ADR-0021 で確定した。** FEAT-03 は「登録済みの種目から、今日やる分を選んで順番を決める」機能とする | — |
+| 〃 | 〃 | AI が返すのは `menu_id`・`order`・`reason` だけ（§3.2.2）。種目名とやり方は `training_menus` から引く | — |
+| 〃 | 〃 | `MENU_MAX` の意味が「提案する新種目の数」から「**今日やる種目の数**」に変わった（§4 L3・#22） | — |
+| 3 | ~~幻覚の残存~~（**解決**） | **前提が消滅した**（ADR-0021）。AI は入力で渡した `menu_id` の集合からしか選べないため、幻覚が起きない | — |
+| 〃 | 〃 | ~~利用者は自分のジムの器具を知っている。使えない提案は無視できるため、除去の実装に見合わないと判断した~~ | — |
+| 〃 | 〃 | 集合外の `menu_id` は検出できる異常として `ERR-MENU-007` で弾く（§3.3・§4 L6）。「除外しない」という旧決定ごと不要になった | — |
 | 4 | ~~生成のたびに課金される／カウンタの置き場所が無い~~（**解決**） | **2026-08-08 決定。レート制限を実装しない。** カウンタ用テーブルも閾値も持たない（§3.3・§5） | — |
 | 〃 | 〃 | 防御は2層。**UI は送信中にボタンを無効化**し、**Gemini API の日次クォータ**が超過を `ERR-AI-QUOTA` で止める（§6・§7） | — |
 | 〃 | 〃 | 想定利用は1日3〜5回、コストは月$1前後。再生成のたびに課金される点は残るが、金額として許容する | — |
@@ -543,15 +596,23 @@ Flutter ウィジェットで記述する。
 | 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` を持たず、本人性は親（`training_menus`）を辿ってしか担保できない | 🟡 中 |
 | 〃 | 〃 | #8 の弱点が1段深くなった。JOIN を1つ落とすと他人の器具が混ざる。RLS は親経由（`menu_id` の所有者が本人）で確定した（ADR-0005） | 〃 |
 | 17 | 提案の信頼度が担保されない（#3 の確定に伴う新規） | 除去処理を持たないため、渡していない器具のメニューがそのまま表示されうる。**利用者が毎回、自分の器具かどうかを判断する必要がある**。判断を誤ると実行できないメニューを登録する | 🟡 中 |
+| 〃 | 〃 | **前提は ADR-0021 で消滅した。** 出るのは登録済みの種目だけで、集合外は ERR-MENU-007 で弾かれる（§4 L6） | 〃 |
 | 18 | NFR-SEC-05 を掲げながら実装しない（#4 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない | 🟡 中 |
 | 19 | ~~`thinking_level` の値に根拠が無い~~（**解決**） | ~~ADR-0001 の `high` は旧パラメータ体系の実測で根拠が失われた~~ → **`medium` を採用**（2026-08-08・ADR-0018）。既定であり公式の推奨。`high` を選び直す根拠が無い。精度が足りなければ `high` へ上げる（1行の変更で戻せる。ADR-0018 の ⚠️ に残課題） | — |
 | 20 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
+| 21 | `how_to` が空の種目の扱い（ADR-0021 に伴う新規） | `training_menus.how_to` は FEAT-01 の任意入力。未記入だと画面に出す説明が無い。案は3つ。(a) 空欄のまま出す／(b) FEAT-01 で必須にする／(c) 空のときだけ AI に書かせる。**(c) は幻覚の余地を戻すため範囲を限定する必要がある** | 🟡 中 |
+| 22 | `MENU_MAX` の件数（ADR-0021 に伴う新規） | 意味が「今日やる種目数」に変わった。現行の既定5 `[仮]` は「今日やる分」としては多い可能性がある。トレーニング1回あたりの現実的な種目数で決める | 🟡 中 |
 
 > ~~要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング。~~（**解決**・2026-08-08）
 > - **保存しない。** Edge Function は応答を返すだけである。
-> - 採用時のみ `training_menus` に INSERT する（利用者が［登録］した1件だけ）。
+> - ~~採用時のみ `training_menus` に INSERT する（利用者が［登録］した1件だけ）。~~
+> - **INSERT は行わない**（ADR-0021）。選ばれた `menu_id` を FEAT-04 へ渡す。
 > - 別テーブル（提案履歴）は作らない。
-> ⚠️ 要確認（人間判断）: #2 AI に渡す入力の粒度と、FEAT-03 が提供する価値の定義（新種目の発見か、既知種目の `how_to` 生成か）。
+> ~~⚠️ 要確認（人間判断）: #2 AI に渡す入力の粒度と、FEAT-03 が提供する価値の定義（新種目の発見か、既知種目の `how_to` 生成か）。~~（**解決**・2026-08-08・ADR-0021）
+> - **登録済みの種目から、今日やる分を選んで順番を決める機能とする。**
+> - AI へ渡すのは `menu_id` つきの種目一覧。返るのは `menu_id`・`order`・`reason`。
+> - 種目名・やり方は AI に書かせない。`training_menus` から引く（§3.2）。
+> - `training_menus` への INSERT は行わない。選ぶ対象が既に登録済みのため（§5）。
 > ~~⚠️ 要確認（人間判断）: #4 レート制限（NFR-SEC-05）の閾値・集計単位（時間/日）、カウンタ用テーブルの採否とスキーマ、および同一入力キャッシュの採否と TTL。~~（**解決**・2026-08-08）
 > - **実装しない。** 閾値もカウンタ用テーブルも同一入力キャッシュも持たない。
 > - 防御は UI の disabled と Gemini API の日次クォータの2層に委ねる（§6・§7）。
@@ -578,5 +639,13 @@ Flutter ウィジェットで記述する。
 > **`medium` を採用する。** 既定であり公式の推奨。`high` を選び直す根拠が無い。
 > ADR-0001 の実測は旧パラメータ体系のもので、新体系の `high` を正当化しない。
 > **精度が足りなければ `high` へ上げる。** 1行の変更で戻せる（ADR-0018 の ⚠️）。
+> ⚠️ 要確認（人間判断）: #21 `how_to` が空の種目をどう扱うか。
+> - `training_menus.how_to` は FEAT-01 の任意入力。未記入の種目がありうる。
+> - 案は3つ。(a) 空欄のまま出す／(b) FEAT-01 で必須にする／(c) 空のときだけ AI に書かせる。
+> - **(c) は幻覚の余地を戻す。** 採るなら生成範囲を `how_to` だけに限定する。
+> ⚠️ 要確認（人間判断）: #22 `MENU_MAX`（今日やる種目数の上限）を何件にするか。
+> - 現行は既定5 `[仮]`。意味が「今日やる種目の数」に変わった（ADR-0021）。
+> - 「今日やる分」としては多い可能性がある。
+> - トレーニング1回あたりの現実的な種目数で決める。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

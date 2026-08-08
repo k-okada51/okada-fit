@@ -10,6 +10,8 @@ status: draft
 > **ADR-0010**（Flutter + Supabase）・**ADR-0011**（Gemini API 直接）で確定済み（2026-08-08）。
 > ADR-0001 は `Superseded by ADR-0011`、ADR-0002 は `Superseded by ADR-0010`。
 
+> 📖 ID（`FEAT-` `NFR-` `RULE-` 等）の意味は [ID早見表](../../00_ID早見表.md) を参照。
+
 ## 連携先インデックス
 
 > 📝 ここに連携先とファイル・主なEXT-IDを記載。連携先が増えたら行とファイルを足す（番号は10刻みで挿入余地を残す）。
@@ -20,7 +22,7 @@ status: draft
 | Google Gemini API（モデル `gemini-3.5-flash`） | [`10_GeminiAPI連携.md`](10_GeminiAPI連携.md) | EXT-01   |
 
 
-外部連携は **EXT-01 の1件のみ**。用途は2つ。
+外部連携は **EXT-01（Google Gemini API）の1件のみ**。用途は2つ。
 
 
 | 用途             | FEAT    | 呼び出し元         |
@@ -65,7 +67,7 @@ Flutter アプリ → Supabase Edge Function → Gemini API
 | ERR-AI-FAIL    | 500  | しない（同上）          |
 
 
-縮退時は AI 機能のみ止め、記録と閲覧は続ける（NFR-AVAIL-05）。利用者にはトーストで知らせる。
+縮退時は AI 機能のみ止め、記録と閲覧は続ける（NFR-AVAIL-05 AI障害時の縮退）。利用者にはトーストで知らせる。
 
 横断方針の正本は `../07_実装共通設計パターン.md`（§3 冪等・§4 リトライ・§5 多重制御）。本書では再定義しない。
 

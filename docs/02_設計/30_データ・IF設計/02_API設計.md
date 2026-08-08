@@ -9,6 +9,8 @@ status: draft
 
 > ⚠️ **本書はたたき台（2026-07-25 生成／2026-08-08 全面改訂）**。岡田さんのレビューで最終確定する。前提: Flutter アプリ（`supabase_flutter`）＋ Supabase（ADR-0004 / ADR-0005）。使うのは Auth / PostgreSQL + RLS / Edge Functions。AI（EXT-01）は Edge Function から Google Gemini API を直接呼ぶ。**Vercel・Next.js は使わない**（2026-08-07 決定）。旧版の `/api/*`（Next.js Route Handler）契約は本改訂で全廃した。対比表は §3 末尾。
 
+> 📖 ID（`FEAT-` `NFR-` `RULE-` 等）の意味は [ID早見表](../00_ID早見表.md) を参照。
+
 ## 目次
 1. [API共通規約](#1-api共通規約)
 2. [想定API一覧](#2-想定api一覧)
@@ -234,18 +236,35 @@ status: draft
 }
 
 // Edge Function 内部
-//   ① machine_ids から器具名・種目名をDB照会（決定的処理・AI不使用・RULE-004）
+//   ① machine_ids から器具名・種目一覧をDB照会（決定的処理・AI不使用・RULE-004）
+//      種目には menu_id を必ず添える
 //   ② Gemini API（EXT-01・generateContent・構造化出力）   （ADR-0011・§5.3）
 //      generationConfig.response_mime_type ＋ generationConfig.response_schema
+//      AIへの指示 = 「渡した種目の中から今日やる分を選び、実施順を決めよ」（ADR-0021）
+//   ③ 返された menu_id が①の集合に含まれるか検証   （ADR-0021）
 
 // Response 200
-{ "menus": [ { "name": "string", "how_to": "string" } ] }
+{ "menus": [ { "menu_id": "bigint", "order": "int", "reason": "string" } ] }
 // Error（共通契約） 400/401/402/429/500/502/504（§5）
+//   加えて ERR-MENU-007（502）= 集合外の menu_id が返った（ADR-0021）
 ```
 
-- 部位→器具の絞り込み（決定的処理・DB照会）は AI 不使用（RULE-004/005）。生成のみ AI。
-- 提案は**永続化しない**。採用時の登録は FEAT-01 の `training_menus` insert。
+**FEAT-03 は「今日のメニューを組む」機能である**（ADR-0021・2026-08-08 確定）。
+
+| 項目 | 内容 |
+|---|---|
+| AI が返すもの | 選んだ種目の **`menu_id`・実施順・理由** |
+| AI が返さないもの | **種目名・やり方・回数・重量** |
+| 種目名・やり方 | `training_menus` から引く（FEAT-01 で本人が登録済み） |
+| 回数・重量 | 持たない（ADR-0008） |
+
+- **幻覚が構造的に起きない。** `menu_id` は入力で渡した集合の中にしか存在しない。
+- 集合外の ID が返れば `ERR-MENU-007`(502) で弾く。**参考情報として通さない。**
+- 部位→器具の絞り込み（決定的処理・DB照会）は AI 不使用（RULE-004/005）。選択と順序づけのみ AI。
+- 提案は**永続化しない**。選ばれた `menu_id` はそのまま `training_session_details` の明細になる（FEAT-04）。
+- **`training_menus` への INSERT は行わない。** 選ぶ対象が既に登録済みのため。
 - 器具IDだけでなく**名称も**プロンプトへ渡す。IDはモデルにとって意味を持たないため。
+- ただし `menu_id` は返させる。**名前で突き合わせると表記ゆれで壊れる。**
 
 ### 4.3 内部 ダッシュボード集計 `[暫定]`（FEAT-05）
 
