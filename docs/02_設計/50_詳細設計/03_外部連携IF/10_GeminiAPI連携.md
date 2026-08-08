@@ -23,17 +23,36 @@ status: draft
 | 項目 | 値 |
 |---|---|
 | 呼び出し元 | Supabase Edge Function（Deno）。アプリから直接呼ばない |
-| エンドポイント | `POST .../v1beta/models/{model}:generateContent` `[仮]` |
+| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` |
 | 認証 | ヘッダ `x-goog-api-key: $GEMINI_API_KEY` |
 | キーの置き場所 | Edge Function の環境変数のみ🔒（NFR-SEC-02） |
 | モデル | `gemini-3.5-flash`。環境変数 `GEMINI_MODEL` で指定。ハードコードしない |
 | 実装 | Deno の `fetch`。SDK は使わない |
 | 形式 | UTF-8・`application/json` |
-| 構造化出力 | `generationConfig.responseMimeType` ＋ `responseSchema` `[仮]` |
-| 画像入力 | `contents[].parts[].inlineData: { mimeType, data }` `[仮]` |
+| 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
+| 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
+| system 指示 | `systemInstruction: { parts: [{ text }] }` |
+| 思考量 | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high` |
+| 応答の取り出し | `candidates[0].content.parts[0].text` |
+| 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback` |
+
+上表は**2026-08-08 に公式ドキュメントで確認**した。以下は本書の記法の正本とする。
 
 - **Gemini API の契約は改変しない。**
-- パス・フィールド名の細部は `[仮]`。実装時に公式ドキュメントで確認する。
+- ~~パス・フィールド名の細部は `[仮]`。実装時に公式ドキュメントで確認する。~~（**解決**・2026-08-08）
+- **REST の JSON は snake_case。** `inline_data`・`mime_type`・`response_mime_type`・`response_schema` と書く。
+- 公式表記のまま残すものは6つ。`systemInstruction`・`generationConfig`・`candidates`・`finishReason`・`usageMetadata`・`promptFeedback`。
+
+### 思考量（`thinking_level`）
+
+**旧稿の `generationConfig.thinkingConfig` は誤り。** 正しくは `thinking_level` である。
+
+| 項目 | 内容 |
+|---|---|
+| パラメータ名 | `thinking_level` |
+| 取り得る値 | `minimal`／`low`／`medium`（既定）／`high` |
+| 併用禁止 | `thinking_budget`（旧）と併用すると **400 エラー**になる |
+| 本PJの値 | 未確定。ADR-0001 は `high` だが根拠が失われた（§4 #10） |
 
 ### 処理の流れ
 
@@ -45,7 +64,7 @@ status: draft
 |---|---|---|---|---|
 | ① | 認証・入力検証 | `functions.invoke('analyze-meal')` ／ `('generate-menu')` | JWT を検証。入力を検証。相関IDを発番 | Edge Function ログ |
 | ② | 入力組立 | （内部） | プロンプトを組み立てる。**DBには書かない** | — |
-| ③ | 推論 | `POST .../{model}:generateContent` `[仮]` | 構造化出力で受ける | **監査ログ**（NFR-SEC-AUDIT-01） |
+| ③ | 推論 | `POST .../{model=models/*}:generateContent` | 構造化出力で受ける | **監査ログ**（NFR-SEC-AUDIT-01） |
 | ④ | 応答整形 | （内部） | zod で検証して200を返す | アプリログ（所要時間） |
 
 機能ごとに違うのは②と③の中身だけ。
@@ -53,7 +72,7 @@ status: draft
 | # | `analyze-meal`（FEAT-08） | `generate-menu`（FEAT-03） |
 |---|---|---|
 | ② | 画像バイトを base64 化 | `machine_ids` から器具・種目名をDB照会（AI不使用・RULE-004） |
-| ③ | `responseSchema` = 栄養4項目＋料理名 `[仮]` | `responseSchema` = `{ menus: [{ name, how_to }] }` `[仮]` |
+| ③ | `response_schema` = 栄養4項目＋料理名 | `response_schema` = `{ menus: [{ name, how_to }] }` |
 | ④ | 画像はメモリ上のみ。永続化しない（ADR-0003） | 提案は永続化しない |
 
 ### 写真の受け渡し（FEAT-08）
@@ -193,10 +212,18 @@ Gemini API の応答は `status` と `error.status` の組で判別する。公�
 | 7 | 監査ログの項目 | `../05_ログ設計.md` 側の項目定義が未確定。プロンプト本文と画像を記録しないことは ADR-0003 から必須 | 🟢 低 |
 | 8 | 実行上限 | 確認済み。実行時間 無料150秒／有料400秒、CPU 2秒（非同期I/Oは除く）、メモリ256MB。**残る未確定はボディ上限のみ** | 🟢 低 |
 | 9 | AI 失敗時に食事を記録できない（#5 の確定に伴う新規） | 手入力は代替にならない。利用者はタンパク質量を知らず、それを知るために写真を撮るため。トレーニング記録と閲覧は影響を受けず要件全体は崩れないが、NFR-AVAIL-05 の文言が実態と合っていない。要件側の見直しが要る | 🟡 中 |
+| 10 | `thinking_level` の値に根拠が無い | ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選んだ。しかし新体系の既定は `medium` である。PoC は旧パラメータでの測定であり、`high` を維持する根拠は現状は無い。`medium` で足りれば応答が速くなり安くなる可能性がある。**実装時に `medium` と `high` を比較する** | 🟡 中 |
+| 11 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
+| 12 | ~~Gemini API 仕様が未確認~~（**解決**） | **2026-08-08 公式ドキュメントで確認した**（§1）。エンドポイント・認証ヘッダ・モデルID・`inline_data`・`response_mime_type`／`response_schema`・`systemInstruction`・応答の取り出しが確定。**REST の JSON は snake_case**。`thinkingConfig` は誤りで、正しくは `thinking_level` | — |
 
 > ~~⚠️ 要確認（人間判断）: 論点2について、本書は「代替経路を持たず縮退のみ」で書いている。別プロバイダへ二重化するなら EXT-ID の追加を伴う設計変更になる。~~（**解決**・2026-08-08）
 > - **縮退のみで確定した。** 別プロバイダへの二重化は行わない。
 > - したがって **EXT-ID の追加も発生しない**。連携先は EXT-01 の1件のみである。
+
+> ⚠️ 要確認（人間判断）: 論点10について、`thinking_level` を `medium` と `high` のどちらにするか決めてください。
+> `medium` が新しい既定です。足りるなら応答が速くなり、費用も下がる可能性があります。
+> ADR-0001 の実測は旧パラメータ体系のもので、`high` を維持する根拠になりません。
+> 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
 
 > ⚠️ 要確認（人間判断）: 論点9について、NFR-AVAIL-05 の文言を見直してください。
 > 「AI不達時も記録・閲覧は継続する」としていますが、食事記録では成立しません。

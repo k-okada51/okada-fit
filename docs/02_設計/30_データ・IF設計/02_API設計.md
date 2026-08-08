@@ -187,9 +187,11 @@ status: draft
   "mime_type":    "string 必須"    // image/jpeg | image/png | image/webp  [仮]
 }
 
-// Edge Function 内部 → Gemini API（EXT-01）
-//   POST .../v1beta/models/{model}:generateContent   [仮]（モデルIDは環境変数 GEMINI_MODEL）
-//   generationConfig.responseSchema = 栄養4項目＋料理名   [仮]
+// Edge Function 内部 → Gemini API（EXT-01・§5.3 の呼び出し仕様に従う）
+//   POST .../v1beta/{model=models/*}:generateContent   （モデルIDは環境変数 GEMINI_MODEL）
+//   contents[].parts[].inline_data       = { mime_type, data }
+//   generationConfig.response_mime_type  = "application/json"
+//   generationConfig.response_schema     = 栄養4項目＋料理名
 
 // Response 200
 {
@@ -233,7 +235,8 @@ status: draft
 
 // Edge Function 内部
 //   ① machine_ids から器具名・種目名をDB照会（決定的処理・AI不使用・RULE-004）
-//   ② Gemini API（EXT-01・generateContent・構造化出力）   （ADR-0011）
+//   ② Gemini API（EXT-01・generateContent・構造化出力）   （ADR-0011・§5.3）
+//      generationConfig.response_mime_type ＋ generationConfig.response_schema
 
 // Response 200
 { "menus": [ { "name": "string", "how_to": "string" } ] }
@@ -392,6 +395,8 @@ status: draft
 
 - PostgREST・RPC は Edge Function を通らない。**サーバが共通形を返さない。**
 - 写像は `app/lib/data/error_mapper.dart` の1か所に閉じる（`../50_詳細設計/07_実装共通設計パターン.md §1`）。
+- 4フィールドのうちどこまで返るかは PostgREST の `client-error-verbosity` 設定で決まる。
+- `verbose` は4つ全部、`minimal` は `code` と `message` だけになる。制約名は `details` に入る。
 - `retryable` は「**利用者が手動で再試行する価値があるか**」を表す。
 - `retryable: true` はサーバが自動再送したことを意味しない。両者は別概念。
 - 利用者向けメッセージに技術詳細を書かない。SQLSTATE・例外文言・モデルIDが該当する。
@@ -416,6 +421,25 @@ status: draft
 - 機能固有 ERR（`ERR-MACHINE-*` 等）は各 `../50_詳細設計/08_機能別詳細設計/FEAT-*.md §6` が割り当てる。
 
 ### 5.3 Gemini API（EXT-01）の ERR マッピング
+
+**呼び出し仕様（2026-08-08 公式ドキュメントで確認）。** 実装ワイヤの正本は `../50_詳細設計/03_外部連携IF/10_GeminiAPI連携.md §1`。
+
+| 項目 | 値 |
+|---|---|
+| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` |
+| 認証ヘッダ | `x-goog-api-key: $GEMINI_API_KEY` |
+| モデルID | `gemini-3.5-flash`（環境変数 `GEMINI_MODEL`） |
+| 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
+| 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
+| system 指示 | `systemInstruction: { parts: [{ text }] }` |
+| 思考量 | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high` |
+| 応答の取り出し | `candidates[0].content.parts[0].text` |
+| 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback` |
+
+- **REST の JSON は snake_case。** `inline_data`・`mime_type`・`response_mime_type`・`response_schema` と書く。
+- 公式表記のまま残すものは6つ。`systemInstruction`・`generationConfig`・`candidates`・`finishReason`・`usageMetadata`・`promptFeedback`。
+- **旧稿の `thinkingConfig` は誤り。** 正しくは `thinking_level` である。
+- `thinking_level` は `thinking_budget`（旧）と**併用すると 400 エラー**になる。
 
 **従来の想定は誤りだった。** 旧版は「残高切れは 429 に混ざって区別できない」としていた。
 公式のエラーコード仕様で**区別できる**ことが 2026-08-08 に確認できた。判定材料は 400 `failed_precondition`。
@@ -458,20 +482,25 @@ Edge Function 側の実行上限（2026-08-08 確認済み）。打ち切りは�
 
 | `code` | 発生 | 共通の扱い | HTTP 相当 |
 |---|---|---|---|
-| `42501` | RLS 拒否 | `ERR-AUTH-001` | 401 |
+| `42501` | 権限不足・RLS 拒否 | `ERR-AUTH-001` | **401 または 403** |
 | `PGRST301` ／ `AuthException` | JWT 失効・未ログイン | `ERR-AUTH-001` | 401 |
 | `PGRST204` | 更新に未知の列を送った | `ERR-VALIDATION-001` | 400 |
 | `PGRST116` | `.single()` が0行 | 機能別 ERR（不在・未作成） | 404 相当 |
-| `23505` | UNIQUE 違反 | 機能別 ERR。`ON CONFLICT DO NOTHING` の箇所は成功扱い | 400 |
-| `23503` | FK 違反 | **業務エラー**（使用中で削除できない）。500 に落とさない | 400 |
-| `23514` | CHECK 違反 | 機能別 ERR | 400 |
+| `23505` | UNIQUE 違反 | 機能別 ERR。`ON CONFLICT DO NOTHING` の箇所は成功扱い | **409** |
+| `23503` | FK 違反 | **業務エラー**（使用中で削除できない）。500 に落とさない | **409** |
+| `23514` | CHECK 違反 | 機能別 ERR | 400 `[仮]` |
 | `P0001` | RPC の `RAISE EXCEPTION` | `message` に載せた ERR-ID をそのまま採用 | 400 / 500 |
 | 上記以外 | 想定外の失敗 | 機能別の 500 系 | 500 |
 
 - 機能別の接頭辞は FEAT-01=`ERR-MACHINE-*` / FEAT-04=`ERR-TRAINING-*` / FEAT-06=`ERR-PROFILE-*`。
 - 同じく FEAT-08=`ERR-MEAL-*` / FEAT-09=`ERR-PROTEIN-*` / FEAT-10=`ERR-FOOD-*`。
 - SQLSTATE を利用者へ出さない。`23505` の詳細も画面に出さない。
-- SQLSTATE `PTxxx` を HTTP ステータス xxx へ写す PostgREST の挙動は `[仮]`（FEAT-05）。
+- **写像の正本は `../50_詳細設計/07_実装共通設計パターン.md §1`**（2026-08-08 公式ドキュメントで確認）。
+- SQLSTATE `PTxyz` は **xyz の3桁がそのまま HTTP ステータス**になる。`PT409` なら 409 が返る。
+- したがって RPC が独自コード（`PT400` / `PT409` / `PT500`）を raise する設計は成立する（FEAT-05）。
+- **`23503`（FK 違反）は 400 系ではない。409 である。** `23505` も 409 になる。
+- `42501` は認証済みなら 403、未認証なら 401 になる。いずれも `ERR-AUTH-001` に写す。
+- `23514`（CHECK 違反）だけは公式の写像表に記載が無く `[仮]` のまま残す。
 - PostgREST・RPC 経路には相関IDが付かない（§1）。障害調査の手掛かりが Edge Function 経路より少ない。
 
 - ERRの完全列挙（分岐網羅の母集合）は `60_テスト設計/02_RED母集合_受入基準・状態・エラー.md` を正本とし、各ERRにハンドラ＋テストを1対1で紐づける。
@@ -479,6 +508,14 @@ Edge Function 側の実行上限（2026-08-08 確認済み）。打ち切りは�
 ### 5.5 要確認事項
 
 > ⚠️ 要確認（人間判断）: **`generateContent` はレガシー扱い**になっている。2026年6月に Interactions API が GA となり、新規プロジェクトにはそちらが推奨されている。`generateContent` は引き続きサポートされる。本改訂は `generateContent` のままとした。移行するかは人間が判断する。移行する場合は §4.1・§4.2 の内部呼び出しと §5.3 の写像を見直すことになる。
+
+> ⚠️ 要確認（人間判断）: `thinking_level` を `medium` と `high` のどちらにするか決めてください（🟡 中）。
+> ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選びました。
+> しかし新体系の既定は `medium` です。PoC は旧パラメータ体系での測定でした。
+> そのため `high` を維持する根拠は現状ありません。`medium` で足りれば速く安くなる可能性があります。
+> 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
+
+> 参考（🟢 低）: 構造化出力と思考の併用で不具合報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する。
 
 > ⚠️ 要確認（人間判断）: `ERR-AI-QUOTA`(429) は**当日中に回復しない**。`ERR-AI-RATE` と同じ「時間をおいて再試行」の文言だと、利用者が無駄に再操作する。文言と導線を分けるかを確定する。
 

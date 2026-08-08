@@ -262,19 +262,38 @@ class RowError { final int line; final String column; final String reasonCode; }
 |---|---|---|
 | 1 | 先頭3バイトが `EF BB BF` | `utf-8-bom`（BOMを除去して UTF-8 デコード） |
 | 2 | `utf8.decode(bytes, allowMalformed: false)` が例外を投げない | `utf-8` |
-| 3 | `CharsetConverter.decode('shift_jis', bytes)` が成功 `[仮]` | `shift_jis` |
+| 3 | `charset` の `shiftJis.decode(bytes)` が成功 | `shift_jis` |
 | 4 | いずれも失敗 | ERR-FOOD-005 |
 
 - UTF-8 を厳密（`allowMalformed: false`）にデコードしてから Shift_JIS にフォールバックする**順序が肝**。
 - 逆順にすると Shift_JIS デコーダはほぼ何でも通す。UTF-8 の日本語が文字化けする。
 - 判定結果は必ず結果サマリに含め、利用者が誤判定に気づけるようにする（§10-4）。
 
-**Dart 側のデコード実装** `[仮]`:
+**Dart 側のデコード実装**（2026-08-08 確定・出典 pub.dev）:
 
 | 文字コード | 手段 |
 |---|---|
 | UTF-8 / UTF-8(BOM) | `dart:convert` の `utf8`（標準） |
-| Shift_JIS(CP932) | **Dart 標準に無い**。`charset_converter` 等のプラグインを使う `[仮]`（§10-9） |
+| Shift_JIS(CP932) | **Dart 標準に無い**。**`charset`（純 Dart）**の `shiftJis` を使う（§10-9） |
+
+`charset` を選ぶ理由は2つある。
+
+| # | 理由 |
+|---|---|
+| 1 | **純 Dart でプラットフォーム依存が無い。** 単体テストを書ける（NFR-QUAL-01 の対象・§3.1） |
+| 2 | OS のコンバータに依存しない。**iOS / Android で挙動が変わらない** |
+
+検討した3パッケージの比較。
+
+| パッケージ | 実装 | 判定 |
+|---|---|---|
+| **`charset`** | **純 Dart**。iso・windows系・gbk・euc-jp・euc-kr・**shift-jis** に対応 | **採用** |
+| `charset_converter` | OS 組み込みのコンバータを呼ぶ。プラットフォーム依存 | 不採用（実機でしか確かめられない） |
+| `flutter_charset_detector` | 文字コードの**自動判定**。`CharsetDetector.autoDecode(bytes)` が charset 名を返す | 不採用（下記） |
+
+- 自動判定が要るなら `flutter_charset_detector` が選択肢になる。
+- ただし本機能は「BOM → UTF-8 厳密 → Shift_JIS」の判定順を自前で決めている（上表）。
+- 判定順が肝であるため、**現行の設計を変えない。** 自動判定には切り替えない。
 
 ### 4-2. `protein_amount` の意味（2026-08-08 確定・ADR-0012）
 
@@ -427,6 +446,9 @@ RPC 由来の失敗は `PostgrestException` として返る。`foods_repository.
 - ERR-FOOD-007 の retryable=true は「手動での再実行が有効」という意味である。
 - ERR-FOOD-007 でも**自動リトライはしない**。同じCSVの再実行は冪等（2回目は全件スキップ）だが、失敗原因を利用者に確認させるためである。
 - 既存マスタと同名の行は**エラーではない**。ERR-ID を割り当てず `skipped_existing_count` として結果サマリに出す。
+- SQLSTATE → HTTP の写像の正本は `../07_実装共通設計パターン.md §1`（2026-08-08 確定）。
+- 本機能は個別の SQLSTATE で分岐しない。RPC の失敗はすべて ERR-FOOD-007 に集約する。
+- `23505`（UNIQUE 違反・409）は `on conflict (name) do nothing` が吸収するため表に出ない。
 - CSVの中身（食品名・数値）はログに残さない。ログ方針の正本は `../05_ログ設計.md`。
 - Flutter 側のクラッシュ収集はスコープ外。端末ログは外部送信しない。
 
@@ -500,10 +522,10 @@ SCR-05 設定・プロフィール内の「食事マスタ取込」セクショ�
 - 1 は 2 より先に流す。UNIQUE が無いと `on conflict (name)` は実行時エラーになる。
 - `normalizeFoodName` は**画面からもリポジトリからも呼ばない**。`validateFoodsCsv` の内部で1回だけ適用し、二重適用を避ける。
 
-| 追加依存 `[仮]` | 用途 |
+| 追加依存 | 用途 |
 |---|---|
-| `file_picker` | CSVファイルの選択 |
-| `charset_converter` | Shift_JIS(CP932) のデコード（§4-1・§10-9） |
+| `file_picker` | CSVファイルの選択 `[仮]` |
+| `charset` | Shift_JIS(CP932) のデコード（**純 Dart**・2026-08-08 確定・§4-1・§10-9） |
 
 ## 9. テスト観点
 
@@ -511,7 +533,7 @@ SCR-05 設定・プロフィール内の「食事マスタ取込」セクショ�
 |---|---|---|
 | TC-FEAT10-01 | 正常系・UTF-8（BOM無し）・数百行 | `imported_count`＝データ行数、`detected_encoding`＝`utf-8` |
 | TC-FEAT10-02 | 正常系・BOM付きUTF-8 | BOMがヘッダ名に混入せず、ヘッダ検証を通過する |
-| TC-FEAT10-03 | 正常系・Shift_JIS（Excel由来） | 日本語の食品名が文字化けせず取り込まれる（実機で `charset_converter` の挙動を確認する） |
+| TC-FEAT10-03 | 正常系・Shift_JIS（Excel由来） | 日本語の食品名が文字化けせず取り込まれる（`charset` は純 Dart のため**単体テストで確認できる**） |
 | TC-FEAT10-04 | 判定順序 | 日本語を含むUTF-8が Shift_JIS と誤判定されない（§4-1 の順序） |
 | TC-FEAT10-05 | 冪等性（NFR-MIGR-02） | 同一CSVを2回取り込むと、2回目は `inserted_count`＝0・`skipped_count`＝データ行数。`foods` の件数・内容は1回目と同一 |
 | TC-FEAT10-06 | 既存を上書きしない | 既存と同名で `protein_amount` が違うCSVを取り込むと、その行はスキップされ**既存の値が変わらない** |
@@ -580,9 +602,11 @@ SCR-05 設定・プロフィール内の「食事マスタ取込」セクショ�
 | 〃 | 〃 | 共通契約の形は `error_code`/`message`/`retryable` の3項目である | 〃 |
 | 〃 | 〃 | 本構成では通信に載らず端末内で完結するが、共通のエラー表示部品と構造が揃わない点は変わらない | 〃 |
 | 〃 | 〃 | 段3の契約改訂で整理するのか、本機能限定の例外とするのかを決める必要がある | 〃 |
-| 9 | 追加依存とプラグイン挙動 | Shift_JIS(CP932) のデコーダは **Dart 標準に無い**。`charset_converter` 等のプラグインが要る | 🟡 中 |
-| 〃 | 〃 | プラグインは iOS ネイティブ実装に依存するため、実機での挙動確認が必須 | 〃 |
-| 〃 | 〃 | 代替として Dart 純実装の変換表を自前で持つ案もあるが、保守コストが上がる（NFR-MAINT-01） | 〃 |
+| 9 | ~~追加依存とプラグイン挙動~~（**解決**・2026-08-08） | Shift_JIS(CP932) のデコーダは **Dart 標準に無い**。外部パッケージが要る点は変わらない | — |
+| 〃 | 〃 | **`charset`（純 Dart）で確定**（出典 pub.dev）。プラットフォーム依存が無い（§4-1） | 〃 |
+| 〃 | 〃 | ~~プラグインは iOS ネイティブ実装に依存するため、実機での挙動確認が必須~~ → 単体テストで確認できる（TC-FEAT10-03） | 〃 |
+| 〃 | 〃 | ~~代替として Dart 純実装の変換表を自前で持つ案もあるが、保守コストが上がる（NFR-MAINT-01）~~ → 自前実装は不要になった | 〃 |
+| 〃 | 〃 | 残る論点は文字コードの誤判定のみ（#4）。判定順は自前で決めるため変えない | 〃 |
 | 10 | 上限値の根拠が薄い | 1,000行／1 MiB／`name` 100文字／`protein_amount` ≤1000 はいずれも `[仮]` | 🟢 低 |
 | 〃 | 〃 | 岡田さんの手元CSVの実サイズを確認して確定させる | 〃 |
 | 〃 | 〃 | **RPC のペイロード上限**（Supabase / PostgREST 側の制約）は未確認である | 〃 |

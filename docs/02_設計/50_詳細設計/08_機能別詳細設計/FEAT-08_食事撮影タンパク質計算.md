@@ -48,8 +48,8 @@ status: draft
 | ② | Flutter | 端末側で長辺1024pxへ縮小する（ADR-0003・必須） |
 | ③ | Flutter → Edge Function | 画像を base64 化し、`analyze-meal` へ直接POSTする |
 | ④ | Edge Function | JWT検証 → 入力検証（MIME・バイト長） |
-| ⑤ | Edge Function → Gemini | 受領した base64 を `inlineData` に載せて `generateContent` を呼ぶ |
-| ⑥ | Edge Function | `responseSchema` の構造化出力を zod で検証する |
+| ⑤ | Edge Function → Gemini | 受領した base64 を `inline_data` に載せて `generateContent` を呼ぶ |
+| ⑥ | Edge Function | `response_schema` の構造化出力を zod で検証する |
 | ⑦ | Edge Function → Flutter | 栄養4項目＋料理名を返す。画像はメモリ上のみで、どこにも永続化しない |
 | ⑧ | Flutter → DB | 利用者が確認して［記録する］→ `meal_logs` に INSERT。値は修正できない（ADR-0015） |
 
@@ -156,7 +156,7 @@ sequenceDiagram
   EF->>EF: ④-2 MIME・バイト長の再検証 → ERR-MEAL-001/002/003
   Note over EF,D: Edge Function は業務テーブルに一切触れない（DB非接触）
   EF->>EF: 監査ログ（外部送信の事実・NFR-SEC-AUDIT-01）
-  EF->>G: ⑤ generateContent（inlineData＝受領した base64・responseSchema・timeout）
+  EF->>G: ⑤ generateContent（inline_data＝受領した base64・response_schema・timeout）
   G-->>EF: 応答（成功＝構造化JSON ／ 失敗＝400・429・5xx・timeout・スキーマ不適合）
   alt AI 正常
     EF->>EF: ⑥ 出力検証（zod・妥当域・Atwater整合）→ ERR-AI-SCHEMA / ERR-MEAL-005
@@ -207,7 +207,7 @@ sequenceDiagram
 
 | 観点 | base64 JSON（**採用**） | `multipart/form-data`（不採用） |
 |---|---|---|
-| Gemini への受け渡し | `inlineData.data` が base64。再エンコード不要 | 関数側で base64 化し直す |
+| Gemini への受け渡し | `inline_data.data` が base64。再エンコード不要 | 関数側で base64 化し直す |
 | クライアント実装 | `functions.invoke` がそのまま使え、JWT も自動で付く | 生の HTTP POST ＋ JWT 手付与になる |
 | 関数側実装 | `req.json()` だけで済む | `formData()` のパースが増える |
 | ボディサイズ | 1.33倍。最大約400KB で上限に届かない | 1.33倍にならない |
@@ -246,16 +246,24 @@ final nutrition = MealNutrition.fromJson(res.data as Map<String, dynamic>);
 
 Deno の `fetch` で直接呼ぶ。SDK は使わない。モデルIDは**環境変数**から読み、コードに直書きしない。
 
+API 仕様は **2026-08-08 に公式ドキュメントで確認済み**。**REST の JSON は snake_case。**
+正本は `../03_外部連携IF/10_GeminiAPI連携.md §1`。
+
 | 項目 | 値 | 根拠 |
 |---|---|---|
-| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` `[仮]` | EXT-01 |
+| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` | EXT-01 |
 | モデル | 環境変数 `GEMINI_MODEL`（既定 `gemini-3.5-flash`） | ADR-0001 |
 | 認証 | ヘッダ `x-goog-api-key: $GEMINI_API_KEY`。**環境変数のみ**に置く | NFR-SEC-02 |
 | プロンプト | `contents[0].parts[0].text = MEAL_ANALYZE_PROMPT`（文言は §10-9） | ADR-0001 |
-| 画像の渡し方 | `contents[0].parts[1].inlineData = { mimeType, data }` | ADR-0003 |
-| `inlineData.data` | **受領した base64 をそのまま使う**。再エンコードもディスク書き出しもしない | ADR-0003 |
-| 構造化出力 | `responseMimeType = "application/json"` ＋ `responseSchema` | EXT-01 |
-| reasoning | `generationConfig.thinkingConfig.thinkingLevel = 'high'` `[仮]` | ADR-0001（実測値の前提） |
+| system 指示 | 使う場合は `systemInstruction: { parts: [{ text }] }` | EXT-01 |
+| 画像の渡し方 | `contents[0].parts[1].inline_data = { mime_type, data }` | ADR-0003 |
+| `inline_data.data` | **受領した base64 をそのまま使う**。再エンコードもディスク書き出しもしない | ADR-0003 |
+| 構造化出力 | `generationConfig.response_mime_type = "application/json"` ＋ `generationConfig.response_schema` | EXT-01 |
+| 応答の取り出し | `candidates[0].content.parts[0].text` を `JSON.parse` | EXT-01 |
+| 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback`（ログ用・§6） | EXT-01 |
+| reasoning | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high`。**`thinkingConfig` は誤り** | EXT-01 |
+| 同上・併用禁止 | `thinking_budget`（旧）と併用すると 400 エラーになる。本PJは併用しない | EXT-01 |
+| 同上・本PJの値 | 未確定。ADR-0001 は `high` だが根拠が失われた。`medium` と比較する | §10-17 |
 | タイムアウト | `signal: AbortSignal.timeout(18_000)` `[仮]`。20秒に2秒の応答余裕 | NFR-PERF-04 |
 | 自動リトライ | 行わない（従量課金のため） | `../../30_データ・IF設計/02_API設計.md` §1 |
 | 429 のみ例外 | `rate_limit_exceeded` に限り、利用者操作なしで1回だけ指数バックオフ再試行 `[仮]` | 同上 |
@@ -265,6 +273,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。モデルIDは**環境�
 
 ```ts
 // supabase/functions/analyze-meal/_schema.ts（PoC実測の基線スキーマ・ADR-0001）
+// generationConfig.response_schema に載せる（フィールド名は snake_case）
 export const MEAL_NUTRITION_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
@@ -306,12 +315,13 @@ const res = await fetch(
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [
         { text: MEAL_ANALYZE_PROMPT },
-        { inlineData: { mimeType, data: base64 } },       // 受領した base64 をそのまま渡す
+        { inline_data: { mime_type: mimeType, data: base64 } },  // 受領した base64 をそのまま渡す
       ]}],
       generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: MEAL_NUTRITION_RESPONSE_SCHEMA,
-        thinkingConfig: { thinkingLevel: 'high' },        // [仮]
+        response_mime_type: 'application/json',
+        response_schema: MEAL_NUTRITION_RESPONSE_SCHEMA,
+        thinking_level: 'high',                           // medium と比較して確定する（§10-17）
+        // thinking_budget（旧）は併用しない。併用すると 400 エラーになる
       },
     }),
     signal: AbortSignal.timeout(18_000),                  // [仮]
@@ -625,7 +635,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 |---|---|---|---|
 | 1 | `supabase/functions/analyze-meal/index.ts` | Edge Function 本体。認証→入力検証→EXT-01→出力検証→返却 | `Deno.serve(handler)` |
 | 1 | 同上 | DB非接触・永続化なし | `async function handler(req: Request): Promise<Response>` |
-| 2 | `supabase/functions/analyze-meal/_schema.ts` | `responseSchema`（Gemini 用）と zod スキーマ・型（§3.2） | `export const MEAL_NUTRITION_RESPONSE_SCHEMA` |
+| 2 | `supabase/functions/analyze-meal/_schema.ts` | `response_schema`（Gemini 用）と zod スキーマ・型（§3.2） | `export const MEAL_NUTRITION_RESPONSE_SCHEMA` |
 | 2 | 同上 | 同上 | `export const mealNutritionSchema` / `export type MealNutrition` |
 | 3 | `supabase/functions/analyze-meal/_gemini.ts` | EXT-01 呼び出しの隔離層。エンドポイント・モデルID・タイムアウトを集約 | `export function callGemini(base64: string, mimeType: string): Promise<MealNutrition>` |
 | 4 | `supabase/functions/analyze-meal/_validation.ts` | 純関数群。画像入力・AI出力の妥当域・Atwater（§4） | `export function assertImageInput(b64: string, mimeType: string): void` |
@@ -700,6 +710,8 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 14 | AI 失敗時に食事を記録できない（#3 の確定に伴う新規） | NFR-AVAIL-05 は「AI不達時も記録・閲覧は継続」としているが、食事記録では成立しない。手入力は代替にならない（利用者が値を知らないため・ADR-0015）。トレーニング記録と閲覧は影響を受けず要件全体は崩れないが、**要件の文言が実態と合っていない**。要件側の見直しが要る | 🟡 中 |
 | 15 | 端末時刻を信頼する（#1 の確定に伴う新規） | 日付は端末TZで決める（ADR-0014）。利用者が端末の日付を変えると記録日がずれる。単一利用者の現行運用では実害が小さいため受容する。サーバ側に照合材料は持たない | 🟢 低 |
 | 16 | NFR-SEC-05 を掲げながら実装しない（#11 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない。**指摘の内容は `FEAT-03_AIメニュー提案.md` §10 #18 と同じ**。要件側への申し送りも同書に集約する | 🟡 中 |
+| 17 | `thinking_level` の値に根拠が無い（Gemini API 仕様確定に伴う新規） | ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選んだ。しかし新体系の既定は `medium` である。PoC は旧パラメータでの測定であり、`high` を維持する根拠は現状は無い。`medium` で足りれば応答が速くなり安くなる可能性がある。**実装時に `medium` と `high` を比較する**（§3.2） | 🟡 中 |
+| 18 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
 
 > ~~⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。~~（**解決**・2026-08-08）
 > ~~直接呼び出しで宣言的フォールバックが失われる点を、許容するか代替を実装するかを決めてください。~~
@@ -746,8 +758,14 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 > - なお現設計で画面に出るのはタンパク質（MAPE 10.5%）だけです。脂質は記録されますが表示されません。
 > - 表示しないなら精度の問題は顕在化しないため、**注記のみで許容するのが妥当**と考えます。
 
+> ⚠️ 要確認（人間判断）: #17 `thinking_level` を `medium` と `high` のどちらにするか決めてください。
+> - `medium` が新しい既定です。足りるなら応答が速くなり、費用も下がる可能性があります。
+> - ADR-0001 の実測は旧パラメータ体系のもので、`high` を維持する根拠になりません。
+> - 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
+
 > ⚠️ 要確認（人間判断）: 本書の `[仮]` 数値は根拠となる実測・要件が無いため暫定です。実機検証後に確定してください。
-> **§3.1**: 許可 MIME 3種。**§3.2**: エンドポイントのパス・フィールド名・`thinkingLevel`・タイムアウト 18秒。
+> **§3.1**: 許可 MIME 3種。**§3.2**: タイムアウト 18秒。
+> ~~**§3.2**: エンドポイントのパス・フィールド名・`thinkingLevel` も `[仮]`。~~（**解決**・2026-08-08 公式ドキュメントで確認）
 > **§3.4**: 画像バイト長の下限 1 KB・上限 1 MB・栄養値の妥当域。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / DB規約＝`../06_DB設計規約.md` / 横断方針＝`../07_実装共通設計パターン.md` / ログ＝`../05_ログ設計.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

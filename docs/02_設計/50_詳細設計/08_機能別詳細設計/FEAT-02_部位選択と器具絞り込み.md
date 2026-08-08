@@ -445,7 +445,7 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 ## 6. エラー処理
 | ERR-ID | 検出層 | 発生条件 | 利用者向けメッセージ（意図） | retryable | ログ |
 |---|---|---|---|---|---|
-| ERR-AUTH-001 | Supabase Auth / PostgREST 401 | JWT が失効・無効（`AuthException` または `PostgrestException(code: '401'/PGRST301')` `[仮]`） | 再ログインを促す（共通契約） | false | 認証失敗として記録（NFR-SEC-AUDIT-02） |
+| ERR-AUTH-001 | Supabase Auth / PostgREST 401・403 | JWT が失効・無効（`AuthException`／`PostgrestException` の `PGRST301`・`42501`） | 再ログインを促す（共通契約） | false | 認証失敗として記録（NFR-SEC-AUDIT-02） |
 | ERR-MACHINE-020 | Flutter（`BodyPart.tryParse`） | 部位が RULE-003 の5値以外 | 部位の指定が不正である旨を伝え、部位を選び直させる | false | WARN。受領値と相関IDを記録（`../05_ログ設計.md`） |
 | ERR-MACHINE-021 | Flutter（`SegmentedButton` 単一選択） | 部位が複数指定されている | 部位は1つだけ選べる旨を伝える | false | WARN。相関IDを記録 |
 | ERR-MACHINE-022 | Flutter | `gymId` が正の整数でない（§7 のジム選択） | ジムの指定が不正である旨を伝える | false | WARN。相関IDを記録 |
@@ -453,8 +453,12 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 
 - ERR-MACHINE-020 / -021 / -022 は**呼び出し前**に検出する。往復を発生させない。
 - ERR-MACHINE-021 は `SegmentedButton` の単一選択と `BodyPart` 型により構造的に起きない。ID は将来のUI変更（複数選択化）に備えて予約する。
-- `PostgrestException` は `code` / `message` / `details` を持つ。
-- `code` で ERR-AUTH-001 と ERR-MACHINE-023 を分岐する。分岐値の確定は実装時 `[仮]`。
+- `PostgrestException` は `code` / `message` / `details` / `hint` の4フィールドを持つ。
+- `code` で ERR-AUTH-001 と ERR-MACHINE-023 を分岐する（2026-08-08 確定）。
+- `PGRST301`（JWT 失効）と `42501`（権限不足・RLS 拒否）が ERR-AUTH-001。それ以外は ERR-MACHINE-023。
+- `42501` の HTTP は認証済みなら 403、未認証なら 401 になる。どちらも同じ ERR に写す。
+- 写像の正本は `../07_実装共通設計パターン.md §1`。本書では再定義しない。
+- `details`・`hint` が返るかは `client-error-verbosity` 設定に依る（同 §1）。本機能は使わない。
 - ERRドメイン `ERR-MACHINE-*` は FEAT-01 と共有する。**FEAT-02 は 020〜039 の範囲のみ**を使う（001〜019 は FEAT-01）。
 - 中間テーブル化で FEAT-02 側の ERR は増えない。参照系のままで、追加の検証が生じないため。
 - ジム絞り込みでも ERR は増えない。既存の ERR-MACHINE-022 を確定にしただけである。

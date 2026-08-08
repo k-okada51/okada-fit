@@ -39,6 +39,21 @@ status: draft
 - **本人分離**: 各履歴テーブルの `user_id` に対し **RLS（Row Level Security）ポリシー**（`user_id = auth.uid()` 相当）で本人行のみに制限。単一ユーザー運用でも将来のマルチユーザー化に耐える。
 - **接続**: サーバ側（Next.js Route Handlers）から Supabase クライアントで接続。資格情報はサーバ環境変数（Secrets）。
 
+> **補記（2026-08-08）: 上の「接続」は起票時の前提であり、現在は成立しない。**
+> ADR-0010 で Flutter アプリになり、Next.js Route Handlers が無くなったため。DB・認証・RLS の決定そのものは変わらない。
+
+| 項目 | 起票時（2026-07-25） | 現行 |
+|---|---|---|
+| 接続元 | サーバ（Next.js Route Handlers） | **Flutter アプリから直接**（`supabase_flutter`） |
+| 経路 | サーバ経由の1本 | PostgREST 直接／RPC／Edge Function の3方式 |
+| 資格情報 | サーバ環境変数のみ | **anon キーはアプリに埋め込まれ公開される** |
+| 本人分離の担保 | サーバ側のコード＋RLS | **RLS のみ**（ADR-0005） |
+
+- **anon キーは秘密ではない。** アプリを解析すれば取り出せる。
+- そのため **RLS が唯一の防御線**になる。ポリシーの漏れがそのまま情報漏洩になる。
+- サーバ環境変数に置くのは `GEMINI_API_KEY` と `SUPABASE_SERVICE_ROLE_KEY` のみ（Edge Function の Secrets・NFR-SEC-02）。
+- 正本は `../02_設計/50_詳細設計/07_実装共通設計パターン.md`（方式割り当て）・`../02_設計/50_詳細設計/01_DB物理設計.md`（RLS ポリシー）。
+
 ## 根拠（Rationale）
 > 📝 ここになぜその案かを記載。トレードオフ・却下理由を明示する。
 

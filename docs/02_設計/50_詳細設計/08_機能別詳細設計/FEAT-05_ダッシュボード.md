@@ -182,13 +182,14 @@ final json = await supabase.rpc('get_dashboard', params: {
 ### エラー時の戻り
 
 ```jsonc
-// PostgREST 形式（[仮]・実装時に確認）
+// PostgREST 形式（2026-08-08 確定・4フィールド）
 { "code": "PT400", "message": "ERR-DASHBOARD-001", "details": "string", "hint": null }
 ```
 
 - 旧構成の共通エラー契約 `{ error_code, message, retryable }` とは形が違う。
 - Flutter 側で `PostgrestException` を捕まえ、共通のエラーモデルへ変換する。
-- 変換規則の正本は `../07_実装共通設計パターン.md`。
+- 変換規則の正本は `../07_実装共通設計パターン.md §1` の写像表。
+- `details`・`hint` が返るかは `client-error-verbosity` 設定に依る（同 §1）。本機能は `message` だけ使う。
 
 ### 3.1 バリデーション規則
 
@@ -536,8 +537,10 @@ $$;
 | ERR-DASHBOARD-002 | 409 | `PT409` | `users` に本人行が存在しない（FEAT-06 の初期設定が未完了） | 初期設定（SCR-05）へ誘導する | false | warn |
 | ERR-DASHBOARD-003 | 500 | — | RPC の失敗（DB到達不能・タイムアウト・想定外例外） | 一時的な取得失敗として再試行を促す | true | error（所要時間を記録） |
 
-- `PT4xx` / `PT5xx` を `errcode` に指定すると PostgREST が同じ番号の HTTP ステータスで返す。
-- 上記は `[仮]`。実装時に公式ドキュメントで確認する。
+- `errcode` に `PTxyz` を指定すると、**xyz の3桁がそのまま HTTP ステータスになる**（2026-08-08 確定）。
+- したがって `PT400` は 400、`PT409` は 409 で返る。**この設計はそのまま成立する。**
+- 公式ドキュメント（PostgREST の Errors リファレンス）で確認済み。正本は `../07_実装共通設計パターン.md §1`。
+- ERR-ID は `RAISE EXCEPTION` の本文に載せ、応答の `message` から読む。
 - ERR-DASHBOARD-003 は RPC 側で分類できない。Flutter が `PostgrestException`・接続例外を捕まえて割り当てる。
 - `users.weight_kg` が NULL のケースは**エラーにしない**。`protein_gauge` を null にして 200 を返す（確定・§10-4）。
 - 画面側はゲージの位置を体重登録の誘導に差し替える（§7）。

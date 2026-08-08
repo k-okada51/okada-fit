@@ -100,7 +100,7 @@ sequenceDiagram
     E-->>F: ERR-MENU-001 / ERR-MENU-002（400）※Gemini API は呼ばない＝課金しない
   else 検証OK
     E->>E: ⑥ プロンプト構成（純関数・§4）
-    E->>G: ⑦ generateContent（responseSchema・AbortSignal.timeout）
+    E->>G: ⑦ generateContent（response_schema・AbortSignal.timeout）
     alt 成功
       G-->>E: candidates[0].content.parts[0].text（JSON文字列）
       E->>E: ⑧ JSON パース → zod 検証（§4）。器具の妥当性は検証しない
@@ -172,19 +172,24 @@ sequenceDiagram
 
 ### 3.2 Edge Function → Gemini API（EXT-01・実装仕様）
 
-Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（パス・フィールド名）は `[仮]`。実装時に公式ドキュメントで確認する。
+Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08-08 に公式ドキュメントで確認済み**。
+
+**REST の JSON は snake_case。** 正本は `../03_外部連携IF/10_GeminiAPI連携.md §1`。
 
 | 項目 | 値 | 根拠 |
 |---|---|---|
-| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` `[仮]` | EXT-01 |
+| エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` | EXT-01 |
 | モデル | 環境変数 `GEMINI_MODEL`（既定 `gemini-3.5-flash`）。**ハードコードしない** | EXT-01 |
 | 認証 | ヘッダ `x-goog-api-key: $GEMINI_API_KEY`。Edge Function の環境変数のみ。Flutter 側には置かない | NFR-SEC-02 |
-| 構造化出力 | `generationConfig.responseMimeType: "application/json"` ＋ `generationConfig.responseSchema` `[仮]` | EXT-01 |
-| 入力 | `contents[].parts[].text`（system 相当は `systemInstruction` `[仮]`）。画像入力は使わない（FEAT-08 のみ） | §4 L2 |
-| 思考量 | `generationConfig.thinkingConfig` `[仮]`（フィールド名・指定値とも要確認） | §10 #13 |
+| 構造化出力 | `generationConfig.response_mime_type: "application/json"` ＋ `generationConfig.response_schema` | EXT-01 |
+| 入力 | `contents[].parts[].text`（system 相当は `systemInstruction: { parts: [{ text }] }`）。画像入力は使わない（FEAT-08 のみ） | §4 L2 |
+| 思考量 | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high`。**`thinkingConfig` は誤り** | EXT-01 |
+| 同上・併用禁止 | `thinking_budget`（旧）と併用すると 400 エラーになる。本PJは併用しない | EXT-01 |
+| 同上・本PJの値 | 未確定。`medium` と `high` を実装時に比較する | §10 #19 |
 | タイムアウト | `AbortSignal.timeout(AI_MENU_TIMEOUT_MS)`。既定 13000ms `[仮]`（15秒枠から DB 照会・整形の余白を差し引く） | NFR-PERF-03 |
 | リトライ | 自動リトライなし。`fetch` は1回だけ発行する（二重課金防止） | §1 |
-| 応答の取り出し | `candidates[0].content.parts[0].text` を `JSON.parse` `[仮]` | 実装方針 |
+| 応答の取り出し | `candidates[0].content.parts[0].text` を `JSON.parse` | EXT-01 |
+| 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback`（ログ用・§6） | EXT-01 |
 | 応答検証 | パース結果を zod（Deno/TS）で検証。失敗は ERR-AI-SCHEMA（ADR-0011） | §3.3 |
 | フォールバック | **持たない**。縮退のみで確定（2026-08-08・§10 #6）。代替プロバイダもモデル切替も置かない | §10 #6 |
 | 連携先 | EXT-01 の1件のみ。**EXT-ID は追加しない** | §10 #6 |
@@ -228,12 +233,12 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 > - そのため AI の付加価値が実質 `how_to` の文章生成と組合せ提案に限定される。
 > - 確定させる論点は、新種目の発見か／やり方の説明か。
 
-#### 3.2.2 出力（`responseSchema`）
+#### 3.2.2 出力（`response_schema`）
 
 構造化出力で受ける。**形の正本はこのコードブロック**とし、散文では繰り返さない。
 
 ```jsonc
-// generationConfig.responseSchema（形のみ。実データは書かない）[仮]
+// generationConfig.response_schema（形のみ。実データは書かない）
 {
   "type": "object",
   "properties": {
@@ -254,7 +259,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 ```
 
 - **検証用の `machine_id` は返させない**（2026-08-08 決定・§10 #3）。器具の妥当性は検証しない。
-- そのため `responseSchema` は §3.1 の Response 200 と同じ形になる。
+- そのため `response_schema` は §3.1 の Response 200 と同じ形になる。
 - 件数上限 MENU_MAX の決め方は §4 L3 が正本。
 
 ### 3.3 バリデーション規則
@@ -455,7 +460,7 @@ Flutter ウィジェットで記述する。
 | # | ファイル | 役割 | 主なシグネチャ |
 |---|---|---|---|
 | 1 | `supabase/functions/generate-menu/index.ts` | Edge Function 本体。JWT検証→入力検証→DB検証→Gemini→整形 | `Deno.serve(async (req: Request): Promise<Response> => { ... })` |
-| 2 | `supabase/functions/generate-menu/schema.ts` | 入力 zod スキーマ・AI出力 zod スキーマ・`responseSchema` 定義 | `export const GenerateMenuRequestSchema` / `export const AiMenuOutputSchema` / `export const AI_MENU_RESPONSE_SCHEMA` |
+| 2 | `supabase/functions/generate-menu/schema.ts` | 入力 zod スキーマ・AI出力 zod スキーマ・`response_schema` 定義 | `export const GenerateMenuRequestSchema` / `export const AiMenuOutputSchema` / `export const AI_MENU_RESPONSE_SCHEMA` |
 | 3 | `supabase/functions/generate-menu/prompt.ts` | プロンプト構成（純関数・§4 L2） | `export function buildMenuPrompt(input: MenuPromptInput): { system: string; prompt: string }` |
 | 4 | `supabase/functions/generate-menu/validate.ts` | 器具×種目行の畳み込み・件数決定（純関数・§4 L1/L3） | `export function groupMachineMenus(rows: MachineMenuRow[]): MachinePromptItem[]` / `export function resolveSuggestionCount(machineCount: number): number` |
 | 5 | `supabase/functions/_shared/gemini.ts` | Gemini API 呼び出しの共通ラッパ（モデル設定値・`AbortSignal.timeout`・エラー写像）。**FEAT-08 と共有し重複実装しない** | `export async function generateStructured<T>(args: GenerateStructuredArgs<T>): Promise<T>` |
@@ -532,13 +537,15 @@ Flutter ウィジェットで記述する。
 | 10 | 横断方針の正本が未記入 | `../07_実装共通設計パターン.md` はテンプレートのままでエラー分類・リトライ・多重制御の値が空。加えて同書は旧構成前提のまま。本書は暫定的に「非冪等・自動リトライなし・429のみバックオフ」を拠り所にしている | 🟡 中 |
 | 11 | ~~認証IDと `users.id` の紐付け~~（**解決**） | **案A で確定（ADR-0005）。** `users.id` を uuid にして `auth.users.id` と一致させた。RLS は `user_id = auth.uid()` の直接比較になる（正本は `../01_DB物理設計.md §3`） | — |
 | 12 | ~~上位文書が旧構成のまま~~（**解決**） | **ADR-0011 が根拠になった**（Gemini API 直接・モデル選定・フォールバック不在の受容）。§3.2・§6・#6 はこれを根拠とする。ADR-0001 は Superseded、ADR-0002 は **ADR-0010** で置換。段3の API 契約も改訂済み | — |
-| 13 | Gemini API 仕様の未確認箇所 | `responseSchema` の対応範囲（`enum`・`minItems` 等）、`systemInstruction` のフィールド名、`thinkingConfig` の指定が未確認で全て`[仮]`。差分は §3.2 に反映する | 🟡 中 |
+| 13 | ~~Gemini API 仕様の未確認箇所~~（**解決**） | **2026-08-08 公式ドキュメントで確認した**（§3.2）。エンドポイント・`inline_data`・`response_mime_type`／`response_schema`・`systemInstruction`・応答の取り出しが確定。**REST の JSON は snake_case**。`thinkingConfig` は誤りで、正しくは `thinking_level` | — |
 | 14 | 部位整合の判定条件が変わった | 多対多化で RULE-004 の判定が「**指定部位の種目を1つ以上持つ**」に変わり（§5）、他部位の併せ持ちは違反でない。原文は1対1とも読め追認が要る。対応種目0件の器具の登録可否も未定（許すと ERR-MENU-001） | 🟡 中 |
 | 15 | 絞り込みの `DISTINCT` と件数照合 | 同一部位の種目を複数持つ器具は複数行出るため、照合は行数でなく `DISTINCT machine_id` 件数で行う。落とすと L3 の器具数も過大になる。ERR-MENU-001 と ERR-MENU-002 の切り分けには2本要る | 🟡 中 |
 | 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` を持たず、本人性は親（`training_menus`）を辿ってしか担保できない | 🟡 中 |
 | 〃 | 〃 | #8 の弱点が1段深くなった。JOIN を1つ落とすと他人の器具が混ざる。RLS は親経由（`menu_id` の所有者が本人）で確定した（ADR-0005） | 〃 |
 | 17 | 提案の信頼度が担保されない（#3 の確定に伴う新規） | 除去処理を持たないため、渡していない器具のメニューがそのまま表示されうる。**利用者が毎回、自分の器具かどうかを判断する必要がある**。判断を誤ると実行できないメニューを登録する | 🟡 中 |
 | 18 | NFR-SEC-05 を掲げながら実装しない（#4 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない | 🟡 中 |
+| 19 | `thinking_level` の値に根拠が無い（#13 の確定に伴う新規） | ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選んだ。しかし新体系の既定は `medium` である。PoC は旧パラメータでの測定であり、`high` を維持する根拠は現状は無い。`medium` で足りれば応答が速くなり安くなる可能性がある。**実装時に `medium` と `high` を比較する** | 🟡 中 |
+| 20 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
 
 > ~~要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング。~~（**解決**・2026-08-08）
 > - **保存しない。** Edge Function は応答を返すだけである。
@@ -567,5 +574,9 @@ Flutter ウィジェットで記述する。
 > ⚠️ 要確認（人間判断）: #18 NFR-SEC-05（レート制限）の要件文を見直してください。
 > - 実装しない方針で確定したため、要件と実装が食い違っています。
 > - 要件を取り下げるか、「日次クォータに委ねる」と書き換えるかを決めてください。
+> ⚠️ 要確認（人間判断）: #19 `thinking_level` を `medium` と `high` のどちらにするか決めてください。
+> - `medium` が新しい既定です。足りるなら応答が速くなり、費用も下がる可能性があります。
+> - ADR-0001 の実測は旧パラメータ体系のもので、`high` を維持する根拠になりません。
+> - 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / 横断方針＝`../07_実装共通設計パターン.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。

@@ -44,8 +44,13 @@ status: draft
 | モデル | `gemini-3.5-flash`。環境変数 `GEMINI_MODEL` で設定値化し、コードに埋め込まない |
 | 認証 | HTTPヘッダ `x-goog-api-key`。値は **Edge Function の環境変数のみ**（NFR-SEC-02） |
 | メソッド | `generateContent` |
-| 構造化出力 | `generationConfig.responseMimeType` ＋ `generationConfig.responseSchema` |
+| 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
+| 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
 | 端末からの経路 | `supabase.functions.invoke(...)`。APIキーは端末に一切置かない |
+
+> **補記（2026-08-08 公式ドキュメントで確認）**: 起票時の本表は構造化出力を `responseMimeType` ／ `responseSchema` と camelCase で記していた。
+> **REST の JSON は snake_case が正しい。** 上表を修正した。決定そのもの（Edge Function から直接呼ぶ）は変わらない。
+> 実装ワイヤの正本は `../02_設計/50_詳細設計/03_外部連携IF/10_GeminiAPI連携.md §1`。
 
 ### Gemini API のエラーコード（公式 api-errors ページで確認）
 
@@ -119,6 +124,13 @@ status: draft
   - `generateContent` は引き続きサポートされる。
   - **本ADRでは `generateContent` を採る。移行するかの判断が別途要る。**
 - ⚠️ 要確認（人間判断）: 日次クォータ超過（`ERR-AI-QUOTA`）は当日回復しない。利用者への伝え方を決める必要がある。
+- ⚠️ 要確認（人間判断）: **思考量（`thinking_level`）を決める現行の ADR が無い（🟡 中・2026-08-08 判明）。**
+  - ADR-0001 は `reasoning: high` を実測ベンチの根拠つきで選んでいた。指定は `providerOptions.google.thinkingConfig`（AI SDK の経路）だった。
+  - **本ADRは経路だけを改訂し、思考量に触れていない。** ADR-0001 は Superseded のため、`high` を定める現行の記録が存在しない。
+  - 直接呼び出しでの正しいパラメータは **`thinking_level`**。値は `minimal` / `low` / **`medium`（既定）** / `high`。
+  - `thinking_budget`（旧）と併用すると **400 エラー**になる。本PJは併用しない。
+  - **`high` を維持する根拠は現状ない。** ADR-0001 の実測は旧パラメータ体系のもので、既定も `medium` に変わった。
+  - 実装時に `medium` と `high` を実測で比べ、精度・応答時間・コストで判断する。決めたら新ADRに記録する。
 - 反映先:
   - `02_設計/10_システム基本設計/04_外部連携.md`（EXT-01 のプロトコル・認証）・`05_技術選定.md`（AI行）
   - `02_設計/30_データ・IF設計/02_API設計.md §5`（ERR マッピング・新設2件）
