@@ -98,7 +98,7 @@ status: draft
 | PostgREST | `from('gym_visits').insert(...)` | 内部 | 要 | 入館記録。**ヒートマップの集計には使わない**（塗り条件は §4.3） |
 | Edge Function | `functions.invoke('generate-menu')` | EXT-01 | 要 | 部位＋器具から AI がメニュー提案（FEAT-03・§4.2） |
 | RPC | `rpc('create_training_session', {p_performed_date, p_menu_ids, p_is_done})` | 内部 | 要 | トレーニング記録（セッション＋明細を1トランザクション・T01） |
-| PostgREST | `from('training_session_details').update({is_done:true})` | 内部 | 要 | 実行済トグル（T02）。状態ガード `.eq('is_done', false)` 付き `[仮]` |
+| PostgREST | `from('training_session_details').update({is_done:true})` | 内部 | 要 | 実行済トグル（T02）。状態ガード `.eq('is_done', false)` 付き（ADR-0008） |
 | RPC | `rpc('get_dashboard', {p_period, p_today, p_range_start, p_range_end, p_month_start, p_month_end})` | 内部 | 要 | ゲージ＋今月の回数＋ヒートマップの集計（FEAT-05・§4.3） |
 | PostgREST | `from('users').select(...).single()` ／ `.update(patch)` | 内部 | 要 | 体重・氏名・目標回数（FEAT-06） |
 | Edge Function | `functions.invoke('analyze-meal')` | EXT-01 | 要 | 食事画像→Gemini API→栄養4項目（保存はしない・§4.1） |
@@ -233,7 +233,7 @@ status: draft
 
 // Edge Function 内部
 //   ① machine_ids から器具名・種目名をDB照会（決定的処理・AI不使用・RULE-004）
-//   ② Gemini API（EXT-01・generateContent・構造化出力）   [仮]
+//   ② Gemini API（EXT-01・generateContent・構造化出力）   （ADR-0011）
 
 // Response 200
 { "menus": [ { "name": "string", "how_to": "string" } ] }
@@ -260,8 +260,8 @@ status: draft
 |---|---|---|---|
 | `p_period` | `text` | 任意（既定 `month`） | `day` / `week` / `month` `[仮]`。**ヒートマップの表示範囲だけを変える** |
 | `p_today` | `date` | 必須 | 「当日」の暦日。Flutter が端末TZで解決して渡す（ADR-0014） |
-| `p_range_start` | `date` | 必須 `[仮]` | ヒートマップの表示範囲の開始日（閉区間） |
-| `p_range_end` | `date` | 必須 `[仮]` | ヒートマップの表示範囲の終了日（閉区間） |
+| `p_range_start` | `date` | 必須（ADR-0014） | ヒートマップの表示範囲の開始日（閉区間） |
+| `p_range_end` | `date` | 必須（ADR-0014） | ヒートマップの表示範囲の終了日（閉区間） |
 | `p_month_start` | `date` | 必須 | **今月の初日**。`training_count` の集計に使う |
 | `p_month_end` | `date` | 必須 | **今月の末日**。同上 |
 
@@ -308,7 +308,7 @@ status: draft
 | 事項 | 内容 |
 |---|---|
 | 期間の影響 | **受けない。`p_period` を変えてもゲージは当日のまま**（2026-08-08 確定） |
-| 体重が未設定 | `protein_gauge` を `null` にして **200 を返す** `[仮]`。エラーにしない |
+| 体重が未設定 | `protein_gauge` を `null` にして **200 を返す**（確定・FEAT-05 §3）。エラーにしない |
 | そのときの他要素 | `training_count`・`heatmap` は通常どおり返す |
 
 ヒートマップの塗り条件を確定した（2026-08-08）。

@@ -142,7 +142,7 @@ final json = await supabase.rpc('get_dashboard', params: {
 
 ```jsonc
 {
-  "protein_gauge": {            // 体重未設定なら、この階層ごと null（[仮]・§10-4）
+  "protein_gauge": {            // 体重未設定なら、この階層ごと null（確定・§10-4）
     "weight_kg": "float",       // users.weight_kg。常に当日の値で period に依存しない
     "intake_g": "float"         // 当日の meal_logs.protein_g 合計。記録なしは 0
   },
@@ -202,7 +202,7 @@ final json = await supabase.rpc('get_dashboard', params: {
 | 未知の引数 | 関数シグネチャに無い引数は PostgREST が弾く。Flutter から送らない | — |
 | 認証セッション | JWT が有効であること | ERR-AUTH-001 (401) |
 | プロフィール存在 | `users` に本人行が存在すること | ERR-DASHBOARD-002 (409) |
-| `users.weight_kg` | NULL 可。NULL でもエラーにせず `protein_gauge: null` で返す（[仮]） | — |
+| `users.weight_kg` | NULL 可。NULL でもエラーにせず `protein_gauge: null` で返す（確定・§10-4） | — |
 
 - Flutter 側は `Period` enum で値域を保証する。RPC 側でも同じ検証を行う（二重）。
 - 二重にする理由は、RPC が Flutter 以外のクライアントからも呼べるため。検証をクライアントに委ねない。
@@ -539,7 +539,7 @@ $$;
 - `PT4xx` / `PT5xx` を `errcode` に指定すると PostgREST が同じ番号の HTTP ステータスで返す。
 - 上記は `[仮]`。実装時に公式ドキュメントで確認する。
 - ERR-DASHBOARD-003 は RPC 側で分類できない。Flutter が `PostgrestException`・接続例外を捕まえて割り当てる。
-- `users.weight_kg` が NULL のケースは**エラーにしない**。`protein_gauge` を null にして 200 を返す（[仮]・§10-4）。
+- `users.weight_kg` が NULL のケースは**エラーにしない**。`protein_gauge` を null にして 200 を返す（確定・§10-4）。
 - 画面側はゲージの位置を体重登録の誘導に差し替える（§7）。
 - 体重未設定でもヒートマップとトレーニング回数は通常どおり表示する。
 - 自動リトライは行わない（参照系のため、利用者操作の [再試行] に委ねる）。

@@ -250,7 +250,7 @@ class RowError { final int line; final String column; final String reasonCode; }
 | 緩和 | DB側の砦は `foods.protein_amount` の CHECK(≥0) と `uq_foods_name`（UNIQUE）の2つ |
 | 緩和 | 正規化を飛ばされても、UNIQUE により**完全一致の重複だけは DB が防ぐ** |
 | 残る穴 | 正規化を飛ばした `　鶏むね肉 ` は別行として入る。DBは正規化を強制しない |
-| 緩和 | 単一ユーザー運用のため当面は許容する `[仮]`（§10-1） |
+| 緩和 | 単一ユーザー運用のため当面は許容する（ADR-0016・§10-1） |
 
 ## 4. 業務ロジック
 

@@ -307,7 +307,7 @@ await supabase.from('gym_visits').insert({
 
 ### 5.1 トランザクション実行手段の設計判断
 
-**採用は案A**（Postgres 関数＝RPC）`[仮]`。
+**採用は案A**（Postgres 関数＝RPC・ADR-0010）。
 
 | 案 | 呼び出し方 |
 |---|---|

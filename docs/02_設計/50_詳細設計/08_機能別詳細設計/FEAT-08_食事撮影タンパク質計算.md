@@ -157,9 +157,9 @@ sequenceDiagram
   Note over EF,D: Edge Function は業務テーブルに一切触れない（DB非接触）
   EF->>EF: 監査ログ（外部送信の事実・NFR-SEC-AUDIT-01）
   EF->>G: ⑤ generateContent（inlineData＝受領した base64・responseSchema・timeout）
-  G-->>EF: 応答（成功＝構造化JSON ／ 失敗＝402・429・timeout・スキーマ不適合）
+  G-->>EF: 応答（成功＝構造化JSON ／ 失敗＝400・429・5xx・timeout・スキーマ不適合）
   alt AI 正常
-    EF->>EF: ⑥ 出力検証（zod・妥当域・Atwater整合）→ ERR-MEAL-004/005
+    EF->>EF: ⑥ 出力検証（zod・妥当域・Atwater整合）→ ERR-AI-SCHEMA / ERR-MEAL-005
     EF-->>F: ⑦ 200 栄養4項目＋food_name/dish_names
     Note over EF: 画像はメモリ上のみ。応答後に破棄される（ADR-0003）
     F->>U: 数値を表示（脂質に精度注記）。操作は［記録する］／［撮り直す］の2つ
@@ -168,7 +168,7 @@ sequenceDiagram
     D-->>F: id, eaten_date
     F->>U: SnackBar「記録しました」→ FEAT-09 の残量を再取得
   else AI 失敗
-    EF-->>F: ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-TIMEOUT / ERR-AI-FAIL
+    EF-->>F: ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-QUOTA / ERR-AI-TIMEOUT / ERR-AI-FAIL
     F->>U: SnackBar「解析に失敗しました」（再解析は手動のみ）
     Note over F,D: この食事は記録できない。撮り直すか諦めるかの2択（ADR-0015・§10-14）
   end
@@ -198,7 +198,7 @@ sequenceDiagram
 | Content-Type | `application/json` |
 | 送信形式 | **画像を base64 化して JSON ボディに載せる**（下の比較表で決定） |
 | ボディサイズ | 実測 中央値 163 KB・最大 303 KB。base64 後で最大約 400 KB（§1 根拠1） |
-| ステータス | 200 / 400 / 401 / 402 / 403 / 413 / 415 / 422 / 429 / 500 / 504 |
+| ステータス | 200 / 400 / 401 / 402 / 413 / 415 / 422 / 429 / 500 / 502 / 504 |
 | 冪等性 | 非冪等。自動リトライなし（`../../30_データ・IF設計/02_API設計.md` §1） |
 
 #### 送信形式の選定
@@ -236,7 +236,7 @@ sequenceDiagram
 ```dart
 // app/lib/data/meal_analyze_repository.dart（抜粋・[仮]）
 final res = await supabase.functions.invoke('analyze-meal', body: {
-  'image_base64': base64Encode(resizedBytes),   // 長辺1024px・JPEG 品質0.8 [仮]
+  'image_base64': base64Encode(resizedBytes),   // 長辺1024px（ADR-0003）・JPEG 品質0.8 [仮]
   'mime_type': 'image/jpeg',
 });
 final nutrition = MealNutrition.fromJson(res.data as Map<String, dynamic>);
@@ -258,7 +258,8 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。モデルIDは**環境�
 | reasoning | `generationConfig.thinkingConfig.thinkingLevel = 'high'` `[仮]` | ADR-0001（実測値の前提） |
 | タイムアウト | `signal: AbortSignal.timeout(18_000)` `[仮]`。20秒に2秒の応答余裕 | NFR-PERF-04 |
 | 自動リトライ | 行わない（従量課金のため） | `../../30_データ・IF設計/02_API設計.md` §1 |
-| 429 のみ例外 | 利用者操作なしで1回だけ指数バックオフ再試行 `[仮]` | 同上 |
+| 429 のみ例外 | `rate_limit_exceeded` に限り、利用者操作なしで1回だけ指数バックオフ再試行 `[仮]` | 同上 |
+| 同上・除外 | `quota_exceeded` は再試行しない。当日は回復しないため（ADR-0011） | §6 |
 | フォールバック | **無し**。Gateway 相当の宣言的なモデル切替は使えない | §10-12 |
 | 要るとき | Edge Function 内に自前で書く | §10-12 |
 
@@ -366,7 +367,7 @@ const res = await fetch(
 | 画像 MIME | `image/jpeg` / `image/png` / `image/webp` のみ `[仮]` | Flutter・Edge Function | ERR-MEAL-002 (415) |
 | MIME の判定 | `mime_type` の申告値と先頭のマジックバイトの両方で見る | Flutter・Edge Function | ERR-MEAL-002 (415) |
 | 画像バイト長 | デコード後 ≤ 1 MB `[仮]`。実測最大 303 KB の約3倍 | Flutter・Edge Function | ERR-MEAL-003 (413) |
-| AI出力の型 | `mealNutritionSchema` に適合すること | Edge Function | ERR-MEAL-004 (422) |
+| AI出力の型 | `mealNutritionSchema` に適合すること | Edge Function | ERR-AI-SCHEMA (502) |
 | AI出力の妥当域 | `calories_kcal` 0〜5000 ／ `protein_g` 0〜500 `[仮]` | Edge Function | ERR-MEAL-005 (422) |
 | AI出力の妥当域 | `sugar_g` 0〜1000 ／ `fat_g` 0〜500 `[仮]` | Edge Function | ERR-MEAL-005 (422) |
 | AI出力の禁止値 | 負値・NaN・Infinity は不可 | Edge Function | ERR-MEAL-005 (422) |
@@ -374,7 +375,7 @@ const res = await fetch(
 | `eaten_date` | 端末TZで決めた ISO 8601 の日付。未来日・1年以上前は不可 `[仮]` | Flutter | ERR-MEAL-007 (400) |
 | `eaten_time` | 端末時刻の ISO 8601 の時刻または null | Flutter | ERR-MEAL-007 (400) |
 
-- 画像バイト長の上限は、長辺1024px・JPEG 品質0.8 `[仮]` のリサイズ後は通常大きく下回る。
+- 画像バイト長の上限は、長辺1024px（ADR-0003）・JPEG 品質0.8 `[仮]` のリサイズ後は通常大きく下回る。
 - バイト長は base64 文字列長から算出する（`len/4*3 −パディング数`）。全体をデコードしない。
 - マジックバイト判定は先頭数バイトだけをデコードして行う。
 - 端末側の検証は UX のためのもの。信頼境界の外にあるため、これだけに依存しない。
@@ -510,19 +511,40 @@ RETURNING id, eaten_date;
 | ERR-MEAL-001 | 400 | 画像が空・`image_base64` が不正 | 写真を選び直すよう促す | false | warn（AI呼び出し前） |
 | ERR-MEAL-002 | 415 | 許可外 MIME（申告値またはマジックバイト） | 対応形式（JPEG/PNG/WebP）を示す | false | warn |
 | ERR-MEAL-003 | 413 | 画像がデコード後 1 MB `[仮]` 超 | 撮り直し／縮小を促す | false | warn（端末側リサイズの不具合を示唆） |
-| ERR-MEAL-004 | 422 | AI応答が `mealNutritionSchema` に不適合 | 「うまく読み取れませんでした。撮り直してください」 | false（手動再実行のみ） | error＋生テキスト要約（画像は残さない） |
-| ERR-MEAL-005 | 422 | AI出力が妥当域外（負値・上限超・NaN） | 同上 | false | error＋出力値 |
+| ERR-MEAL-004 | — | **欠番。** AI応答の型不適合は共通の `ERR-AI-SCHEMA` で受ける（ADR-0011・§3.4） | — | — | — |
+| ERR-MEAL-005 | 422 | AI出力が妥当域外（負値・上限超・NaN） | 「うまく読み取れませんでした。撮り直してください」 | false | error＋出力値 |
 | ERR-MEAL-006 | 400 | 保存時の栄養4項目が欠落・非数値・負値 | 撮り直しを促す（利用者は値を直せない） | false | warn |
 | ERR-MEAL-007 | 400 | `eaten_date`/`eaten_time` の形式不正・未来日 | 端末の日時設定を確認するよう促す | false | warn |
 | ERR-MEAL-008 | — | **欠番。** アプリ側レート制限を実装しないため未使用（ADR-0016・§3.4・§10 #11） | — | — | — |
 | ERR-MEAL-009 | 500 | `meal_logs` INSERT 失敗（CHECK違反・RLS拒否・接続断） | 「記録に失敗しました」＋再試行導線 | true | error＋SQLSTATE（値はマスキング） |
-| ERR-AI-CREDIT | 402 | Gemini API のクレジット・クォータ不足 | AI機能の一時停止を伝える | false | error（運用者向けアラート対象） |
-| ERR-AI-RATE | 429 | Gemini API のレート制限 | 少し待って再試行するよう促す | true（指数バックオフ） | warn |
-| ERR-AI-TIMEOUT | 504 | `AbortSignal` 発火（18秒 `[仮]`） | 「時間内に解析できませんでした」 | false（課金抑止のため自動再試行しない） | error＋所要時間 |
-| ERR-AI-FAIL | 500 | 上記以外の EXT-01 失敗（不達・5xx を含む） | 解析失敗を伝え、撮り直しを案内 | false | error（NFR-AVAIL-05 の縮退判定材料） |
+| ERR-AI-CREDIT | 402 | Gemini API が課金無効・請求未設定で拒否（**400 `failed_precondition`**・ADR-0011） | AI機能の一時停止を伝える | false | error（運用者向けアラート対象） |
+| ERR-AI-RATE | 429 | Gemini API の分/秒あたりのレート制限（**429 `rate_limit_exceeded`**・ADR-0011） | 少し待って再試行するよう促す | true（指数バックオフ） | warn |
+| ERR-AI-QUOTA | 429 | Gemini API の日次クォータ超過（**429 `quota_exceeded`**・ADR-0011） | 当日は回復しない旨を伝える | false | error（運用者向けアラート対象） |
+| ERR-AI-TIMEOUT | 504 | `AbortSignal` 発火（18秒 `[仮]`）、または 504 `deadline_exceeded`・接続断 | 「時間内に解析できませんでした」 | false（課金抑止のため自動再試行しない） | error＋所要時間 |
+| ERR-AI-FAIL | 500 | キー無効・権限なし（401 `authentication`／403 `permission_denied`）、モデル不明（404 `model_not_found`）、API側の障害（500 `api_error`／503 `service_unavailable`）、不達 | 解析失敗を伝え、撮り直しを案内 | false | error（NFR-AVAIL-05 の縮退判定材料） |
+| ERR-AI-SCHEMA | 502 | 200 だが AI応答が `mealNutritionSchema` に不適合。呼び出し自体は成功している（ADR-0011） | 「うまく読み取れませんでした。撮り直してください」 | false（手動再実行のみ） | error＋生テキスト要約（画像は残さない） |
 
 - ERR-MEAL-003 は通常、端末側リサイズにより到達しない。
-- 欠番の ERR-MEAL-008 は**採番を変えずに残す。** ERR-MEAL-009 を繰り上げない。
+- 欠番の ERR-MEAL-004 / 008 は**採番を変えずに残す。** ERR-MEAL-005〜009 を繰り上げない。
+
+**429 は2種類あり、retryable が逆になる。**
+
+| Gemini の `error.status` | 意味 | 本PJ | retryable |
+|---|---|---|---|
+| `rate_limit_exceeded` | 分/秒あたりの上限超過 | ERR-AI-RATE | true |
+| `quota_exceeded` | 日次クォータ超過 | ERR-AI-QUOTA | false |
+
+- HTTP ステータスだけで判定しない。`error.status` を必ず見る。
+- 見ずに判定すると、日次クォータ切れをバックオフで叩き続ける。
+
+`ERR-MEAL-005`（妥当域外）は共通ERRに寄せず、FEAT-08 固有のまま残す。理由は2つ。
+
+| 事項 | 内容 |
+|---|---|
+| 原因が違う | 型は `mealNutritionSchema` に適合している。逸脱するのは業務上の妥当域である |
+| 判定基準が固有 | 上限値（kcal 0〜5000 等・§3.4）は FEAT-08 の業務判断で、共通契約に持てない |
+
+- 写像の正本は `../03_外部連携IF/10_GeminiAPI連携.md` の「ERRマッピング」。
 
 ### 通信断の扱い
 
@@ -629,10 +651,10 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | TC-FEAT08-03 | 画像の非永続化 | 実行後、画像バイト列・base64 がログ・DB・端末外のどこにも存在しない（ADR-0003） |
 | TC-FEAT08-04 | プレビュー段階で未送信 | ［解析する］押下前に `analyze-meal` への POST が発生しない |
 | TC-FEAT08-05 | 入力拒否（課金前に弾く） | 許可外MIMEで ERR-MEAL-002 (415)、デコード後 1 MB `[仮]` 超で ERR-MEAL-003 (413)。いずれも EXT-01 を呼ばない |
-| TC-FEAT08-06 | AI出力の不正 | スキーマ不適合で ERR-MEAL-004 (422)、妥当域外で ERR-MEAL-005 (422)。自動リトライしない |
+| TC-FEAT08-06 | AI出力の不正 | スキーマ不適合で ERR-AI-SCHEMA (502)、妥当域外で ERR-MEAL-005 (422)。自動リトライしない |
 | TC-FEAT08-07 | Atwater乖離 | 乖離 0.40 `[仮]` 超でも 200 を返し、警告フラグのみ立つ（保存はブロックしない） |
 | TC-FEAT08-08 | フォールバックが無いこと | 既定モデル失敗時に自動でモデル切替せず ERR-AI-FAIL を返す（Gateway 相当の宣言的切替は使わない・§10-12） |
-| TC-FEAT08-09 | AI障害の分岐 | 429→ERR-AI-RATE（バックオフ後）／18秒 `[仮]` 超→ERR-AI-TIMEOUT (504)／402→ERR-AI-CREDIT。いずれも自動再実行しない |
+| TC-FEAT08-09 | AI障害の分岐 | 429 `rate_limit_exceeded`→ERR-AI-RATE（バックオフ後）／429 `quota_exceeded`→ERR-AI-QUOTA（再試行しない）／400 `failed_precondition`→ERR-AI-CREDIT (402)／18秒 `[仮]` 超→ERR-AI-TIMEOUT (504) |
 | TC-FEAT08-10 | 縮退 | EXT-01 全断でも過去記録の閲覧・FEAT-09 残量が動作する。その食事は記録できない（§10-14） |
 | TC-FEAT08-11 | 保存の正常系 | 栄養4項目＋日時で1行 INSERT、画像・料理名の列が存在しない |
 | TC-FEAT08-12 | 保存の検証 | 負値・欠落で ERR-MEAL-006 (400)、不正日時で ERR-MEAL-007 (400)。DBに行が増えない |

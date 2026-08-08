@@ -106,8 +106,8 @@ sequenceDiagram
       E->>E: ⑧ JSON パース → zod 検証（§4）。器具の妥当性は検証しない
       E-->>F: 200 { menus:[{ name, how_to }] }
       F->>U: ListView にメニュー案を表示（保存しない。［登録］した1件だけ FEAT-01 へ）
-    else 失敗（abort＝504／Gemini API 403・429・不達／出力不正）
-      E-->>F: ERR-AI-TIMEOUT / ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-QUOTA / ERR-AI-FAIL / ERR-MENU-004
+    else 失敗（abort＝504／Gemini API 400・429・5xx・不達／出力不正）
+      E-->>F: ERR-AI-TIMEOUT / ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-QUOTA / ERR-AI-FAIL / ERR-AI-SCHEMA
       F->>U: SnackBar で通知（記録・閲覧は継続・NFR-AVAIL-05）
     end
   end
@@ -144,7 +144,7 @@ sequenceDiagram
 | Content-Type | `application/json`（リクエスト・レスポンスとも） |
 | 冪等性 | 非冪等。自動リトライなし（従量課金） |
 | タイムアウト | Edge Function 側 ≤15秒（NFR-PERF-03）。超過は 504 |
-| ステータス | 200 / 400 / 401 / 402 / 409 / 429 / 500 / 504 |
+| ステータス | 200 / 400 / 401 / 402 / 409 / 429 / 500 / 502 / 504 |
 | 失敗時の受け取り | `FunctionException`（`status` ＋ ボディの `error_code`）`[仮]`。Dart 側でモデルクラスに `fromJson` して分岐する |
 
 ```jsonc
@@ -185,7 +185,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 | タイムアウト | `AbortSignal.timeout(AI_MENU_TIMEOUT_MS)`。既定 13000ms `[仮]`（15秒枠から DB 照会・整形の余白を差し引く） | NFR-PERF-03 |
 | リトライ | 自動リトライなし。`fetch` は1回だけ発行する（二重課金防止） | §1 |
 | 応答の取り出し | `candidates[0].content.parts[0].text` を `JSON.parse` `[仮]` | 実装方針 |
-| 応答検証 | パース結果を zod（Deno/TS）で検証。失敗は ERR-MENU-004 | §3.3 |
+| 応答検証 | パース結果を zod（Deno/TS）で検証。失敗は ERR-AI-SCHEMA（ADR-0011） | §3.3 |
 | フォールバック | **持たない**。縮退のみで確定（2026-08-08・§10 #6）。代替プロバイダもモデル切替も置かない | §10 #6 |
 | 連携先 | EXT-01 の1件のみ。**EXT-ID は追加しない** | §10 #6 |
 
@@ -265,7 +265,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様の細部（�
 | `machine_ids` | 必須・整数配列・1件以上・上限 MACHINE_MAX（既定10 `[仮]`）・重複なし | ERR-VALIDATION-001 (400) |
 | `machine_ids` の実在・所有 | 全IDが本人参照可能な `training_machines` に存在（RLS 経由で件数一致） | ERR-MENU-001 (400) |
 | `machine_ids` と `body_part` の整合 | 全器具が `machine_menus` 経由で**指定部位の種目を1つ以上持つ**（RULE-004）。全種目が指定部位である必要はない | ERR-MENU-002 (400) |
-| AI出力 | `JSON.parse` に成功し、zod スキーマを満たす | ERR-MENU-004 (500) |
+| AI出力 | `JSON.parse` に成功し、zod スキーマを満たす | ERR-AI-SCHEMA (502) |
 
 Edge Function 側で行わない検証を明示する。
 
@@ -275,7 +275,8 @@ Edge Function 側で行わない検証を明示する。
 | AI出力の器具整合 | 幻覚を除外しない（§10 #3）。提案は参考情報とする | ERR-MENU-005 は**欠番** |
 | 多重実行の検知 | UI の disabled で抑止する（§7） | ERR-MENU-006 は**欠番** |
 
-- 欠番の3件は**採番を変えずに残す。** 他の ERR-ID を繰り上げない（§6）。
+- 上の3件は**採番を変えずに残す。** 他の ERR-ID を繰り上げない（§6）。
+- `ERR-MENU-004` も**欠番**。構造化出力の失敗は共通の `ERR-AI-SCHEMA` で受ける（ADR-0011・§6）。
 
 ## 4. 業務ロジック
 
@@ -297,7 +298,7 @@ Edge Function 側で行わない検証を明示する。
 | 対象 | 値 | 期待 |
 |---|---|---|
 | `machine_ids` 件数 | 0 / 1 / MACHINE_MAX / MACHINE_MAX+1 | 400 / OK / OK / 400 |
-| AI 出力 `menus` 件数 | 0 / 1 / MENU_MAX / MENU_MAX+1 | ERR-MENU-004 / OK / OK / ERR-MENU-004 |
+| AI 出力 `menus` 件数 | 0 / 1 / MENU_MAX / MENU_MAX+1 | ERR-AI-SCHEMA / OK / OK / ERR-AI-SCHEMA |
 | AI 応答時間 | timeout 未満 / 超過 | 200 / ERR-AI-TIMEOUT |
 
 純関数として切り出す（Deno 側・単体テスト対象・NFR-QUAL-01）:
@@ -390,29 +391,34 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | ERR-MENU-001 | 400 | 指定器具が存在しない、本人が参照できない、または対応種目が1件も無い | 器具の選び直しを促す | false | warn（要求件数と畳んだ後の件数） |
 | ERR-MENU-002 | 400 | 器具が選択部位の種目を1つも持たない（RULE-004違反） | 部位と器具の組合せを直す旨 | false | warn |
 | ERR-MENU-003 | — | **欠番。** アプリ側レート制限を実装しないため使わない（§10 #4） | — | — | — |
-| ERR-MENU-004 | 500 | AI 出力が `JSON.parse` 不能、または zod スキーマ不適合（件数0・型不一致等） | 生成に失敗した旨 | false | error（`finishReason`・`promptFeedback`。本文は残さない） |
+| ERR-MENU-004 | — | **欠番。** 構造化出力の失敗は共通の `ERR-AI-SCHEMA` で受ける（ADR-0011・§10 #7） | — | — | — |
 | ERR-MENU-005 | — | **欠番。** 幻覚を除外しないため使わない（§10 #3） | — | — | — |
 | ERR-MENU-006 | — | **欠番。** 多重実行の検知を実装しないため使わない（§10 #4） | — | — | — |
-| ERR-AI-CREDIT | 402 | Gemini API がクォータ・課金起因で拒否（HTTP 403 `PERMISSION_DENIED`／日次上限の 429）`[仮]` | 一時的に利用できない旨 | false | error（要運用通知） |
-| ERR-AI-RATE | 429 | Gemini API のレート制限（HTTP 429 `RESOURCE_EXHAUSTED`）`[仮]` | 時間をおいて再試行する旨 | true（指数バックオフ） | warn |
-| ERR-AI-QUOTA | 429 | Gemini API の日次クォータ超過（429 `quota_exceeded`）。**コスト暴走を止める唯一の層** | 当日は回復しない旨 | false | error（要運用通知） |
-| ERR-AI-TIMEOUT | 504 | `AbortSignal.timeout` 到達（NFR-PERF-03 超過） | 時間内に生成できなかった旨 | false（自動リトライしない） | error（経過ms） |
-| ERR-AI-FAIL | 500 | Gemini API へ不達、または 5xx。**フォールバック先は無い**（§10 #6） | AI機能のみ一時停止・記録と閲覧は継続（NFR-AVAIL-05） | false | error（HTTPステータス） |
+| ERR-AI-CREDIT | 402 | Gemini API が課金無効・請求未設定で拒否（**400 `failed_precondition`**・ADR-0011） | 一時的に利用できない旨 | false | error（要運用通知） |
+| ERR-AI-RATE | 429 | Gemini API の分/秒あたりのレート制限（**429 `rate_limit_exceeded`**・ADR-0011） | 時間をおいて再試行する旨 | true（指数バックオフ） | warn |
+| ERR-AI-QUOTA | 429 | Gemini API の日次クォータ超過（429 `quota_exceeded`・ADR-0011）。**コスト暴走を止める唯一の層** | 当日は回復しない旨 | false | error（要運用通知） |
+| ERR-AI-TIMEOUT | 504 | `AbortSignal.timeout` 到達（NFR-PERF-03 超過）、または 504 `deadline_exceeded`・接続断 | 時間内に生成できなかった旨 | false（自動リトライしない） | error（経過ms） |
+| ERR-AI-FAIL | 500 | キー無効・権限なし（401 `authentication`／403 `permission_denied`）、モデル不明（404 `model_not_found`）、API側の障害（500 `api_error`／503 `service_unavailable`）、不達。**フォールバック先は無い**（§10 #6） | AI機能のみ一時停止・記録と閲覧は継続（NFR-AVAIL-05） | false | error（HTTPステータス） |
+| ERR-AI-SCHEMA | 502 | 200 だが AI 出力が `JSON.parse` 不能、または zod スキーマ不適合（件数0・型不一致等）。呼び出し自体は成功している（ADR-0011） | 生成に失敗した旨 | false | error（`finishReason`・`promptFeedback`。本文は残さない） |
 
 | 方針 | 内容 |
 |---|---|
 | 監査ログ | EXT-01 への送信は「いつ・どのモデルへ・何トークン」を残す（NFR-SEC-AUDIT-01）。プロンプト本文・出力本文は残さない |
 | 出力先 | Supabase Edge Function ログ（`console.log` の1行1JSON）。`service` は `okada-fit-fn` |
-| 縮退 | 402/429/500/504 のいずれでも、SCR-03 の記録・閲覧機能は動作を継続する（NFR-AVAIL-05） |
-| 欠番 | ERR-MENU-003 / 005 / 006 は**採番を残したまま使わない**。他の ERR-ID を繰り上げない |
+| 縮退 | 402/429/500/502/504 のいずれでも、SCR-03 の記録・閲覧機能は動作を継続する（NFR-AVAIL-05） |
+| 欠番 | ERR-MENU-003 / 004 / 005 / 006 は**採番を残したまま使わない**。他の ERR-ID を繰り上げない |
+| 429 の2種 | `rate_limit_exceeded` は待てば通る。`quota_exceeded` は当日回復しない。`error.status` で判別する |
 | 縮退の範囲 | 代替経路を持たない。Gemini API が落ちれば FEAT-03 は全停止する（§10 #6） |
 
 > ERRの完全列挙の正本は `../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`（段6で集約）。本表はその入力とする。
 
-> ⚠️ 要確認（人間判断）: **ERR-AI-CREDIT と ERR-AI-RATE の切り分け条件。**
-> - Gemini API はクォータ超過も一時的レート超過も 429 `RESOURCE_EXHAUSTED` を返し得る。
-> - そのため HTTP ステータスだけでは分離できない `[仮]`。
-> - エラーボディの `status`／`reason` で判定するか、両者を1つに統合するかを決める。
+> ~~⚠️ 要確認（人間判断）: **ERR-AI-CREDIT と ERR-AI-RATE の切り分け条件。**~~（**解決**・ADR-0011）
+> - ~~Gemini API はクォータ超過も一時的レート超過も 429 `RESOURCE_EXHAUSTED` を返し得る。~~
+> - ~~そのため HTTP ステータスだけでは分離できない。~~
+> - **この想定は誤りだった。** 公式のエラーコード仕様で**区別できる**ことを確認した。
+> - 課金無効は 400 `failed_precondition`、レート制限は 429 `rate_limit_exceeded`。
+> - 日次クォータは 429 `quota_exceeded` で返る。判別は `error.status` で行う。
+> - 写像の正本は `../03_外部連携IF/10_GeminiAPI連携.md` の「ERRマッピング」。
 
 ## 7. 画面挙動・状態別表示
 
@@ -468,9 +474,9 @@ Flutter ウィジェットで記述する。
 | TC-FEAT03-03 | 入力不正（`body_part` enum 外／`machine_ids` が空・重複・上限超） | 400・ERR-VALIDATION-001・EXT-01 を呼ばない |
 | TC-FEAT03-04 | 他人所有の器具ID／存在しないID | 400・ERR-MENU-001・EXT-01 を呼ばない |
 | TC-FEAT03-05 | 選択部位の種目を1つも持たない器具を指定（RULE-004） | 400・ERR-MENU-002・EXT-01 を呼ばない |
-| TC-FEAT03-07 | AI 出力が JSON として不正／スキーマ不一致 | 500・ERR-MENU-004・自動リトライしない |
+| TC-FEAT03-07 | AI 出力が JSON として不正／スキーマ不一致 | 502・ERR-AI-SCHEMA・自動リトライしない |
 | TC-FEAT03-08 | AI 応答がタイムアウト閾値を超える | 504・ERR-AI-TIMEOUT・`fetch` は1回のみ |
-| TC-FEAT03-09 | Gemini API が 429／403 を返す | ERR-AI-RATE（retryable=true）／ERR-AI-CREDIT（false） |
+| TC-FEAT03-09 | Gemini API が 429 の2種／400 `failed_precondition` を返す | ERR-AI-RATE（true）／ERR-AI-QUOTA（false）／ERR-AI-CREDIT（false） |
 | TC-FEAT03-10 | Gemini API へ不達（DNS・接続失敗・5xx） | 500・ERR-AI-FAIL。同一セッションで記録・閲覧は 200（NFR-AVAIL-05） |
 | TC-FEAT03-12 | 応答時間・副作用 | 正常系 ≤15秒（NFR-PERF-03）。成功/失敗いずれでも `training_menus` の行数が増えない |
 | TC-FEAT03-13 | 純関数 `buildMenuPrompt` | 器具名・種目名・部位・件数上限が構成物に含まれ、個人属性が含まれない |
@@ -517,7 +523,9 @@ Flutter ウィジェットで記述する。
 | 6 | ~~単一プロバイダ依存・フォールバック手段が無い~~（**解決**） | **2026-08-08 決定。縮退のみで確定。** 代替プロバイダもモデル切替も持たない。**EXT-ID は EXT-01 の1件のみで追加しない**（§3.2） | — |
 | 〃 | 〃 | Gemini API が落ちると FEAT-03 は全停止する。トレーニング記録と閲覧は継続する（NFR-AVAIL-05・§6） | — |
 | 〃 | 〃 | 個人利用・日次の用途のため、復旧後にやり直せばよい。数時間の停止を許容する | — |
-| 7 | 構造化出力の失敗が共通エラー契約に無い | `responseSchema` 不適合・JSON 破損に対応する ERR も HTTP も共通契約に無い。再試行しても同じ結果になりやすく既存4種と性質が違う。本書は `ERR-MENU-004` を`[仮]`採用したが追加が要る | 🟡 中 |
+| 7 | ~~構造化出力の失敗が共通エラー契約に無い~~（**解決**） | ~~本書は `ERR-MENU-004` を`[仮]`採用したが追加が要る~~。**`ERR-AI-SCHEMA`(502) を共通契約に新設して確定した**（ADR-0011） | — |
+| 〃 | 〃 | `ERR-AI-FAIL` と分けたのは、呼び出し自体は成功しており原因が違うため。自動再試行はしない | — |
+| 〃 | 〃 | FEAT-08 も同じ分岐を持つ。機能別ではなく共通側に寄せたため `ERR-MENU-004` は欠番になった（§3.3・§6） | — |
 | 8 | ~~`training_machines` に `user_id` が無い~~（**解決**） | **2026-08-08 決定（ADR-0005）。共通マスタで確定**（`TO authenticated USING (true)`）。所有者列は足さない。本人性は `training_menus` の RLS（`user_id = auth.uid()`）と `machine_menus` の親経由ポリシーが担保する（§5） | — |
 | 〃 | 〃 | JOIN を落とすと他人の器具が読める点は変わらない。**service role key で即座に露出する**ため呼び出し元JWTを使う（§5） | — |
 | 9 | ~~`training_machines.menu_id` の INDEX 未定義~~（解決） | ~~`menu_id` の INDEX が未定義~~。多対多化で `menu_id` は廃止され `machine_menus` の INDEX 2本に置き換わった（§5）。両方向とも効き、件数規模の論点は FEAT-02 と共通 | 🟢 低 |
@@ -546,7 +554,9 @@ Flutter ウィジェットで記述する。
 > - **受容する。縮退のみとする。** 自前のモデル切替は実装しない。
 > - **EXT-ID の追加も行わない。** 連携先は EXT-01 の1件のままである。
 > - NFR-AVAIL-05 の縮退範囲に「FEAT-03 全停止」を明記する扱いは変わらない。
-> ⚠️ 要確認（人間判断）: #7 構造化出力の失敗（スキーマ不適合・JSON破損）に割り当てる ERR-ID と HTTP ステータスの共通契約への追加。FEAT-08 も同じ分岐を持つため、機能別ではなく共通側で決めるべき。
+> ~~⚠️ 要確認（人間判断）: #7 構造化出力の失敗に割り当てる ERR-ID と HTTP の共通契約への追加。~~（**解決**・ADR-0011）
+> - **共通側で決めた。** `ERR-AI-SCHEMA`(502) を新設し、FEAT-08 と共有する。
+> - `ERR-MENU-004` は使わない。**採番は変えず欠番として残す**（§3.3・§6）。
 > ~~要確認（人間判断）: #8 `training_machines` の本人性担保方式（JOIN 条件のみで足りるか、RLS ポリシーをどう書くか）。~~（**解決**・ADR-0005）
 > - `training_machines` は共通マスタ、`machine_menus` は親経由、`training_menus` は `user_id = auth.uid()`（§5）。
 > - 残る要確認は「共通マスタを誰でも書き換えられる」点のみ（§5・Phase2）。
