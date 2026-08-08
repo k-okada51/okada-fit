@@ -168,7 +168,11 @@ Gemini API の応答は `status` と `error.status` の組で判別する。公�
 > ~~⚠️ 要確認（人間判断）: `ERR-AI-CREDIT` の切り分け条件が未確定。残高切れは 429 に混ざって区別できない見込み。~~（**解決**・2026-08-08）
 > **この想定は誤りだった。** 公式のエラーコード仕様で**区別できる**ことを確認した。課金無効は **400 `failed_precondition`**、レート制限は 429 `rate_limit_exceeded`、日次クォータは 429 `quota_exceeded` で返る。
 
-> ⚠️ 要確認（人間判断）: 段3との乖離。`POST /api/meals/analyze` は `analyze-meal`、`POST /api/menus/generate` は `generate-menu` に置き換わる。FEAT-08 は直接POSTのままで、**変わるのは宛先だけ**。`../../30_データ・IF設計/02_API設計.md §4.1・§4.2` の改訂が要る。
+> ~~⚠️ 要確認（人間判断）: 段3との乖離。`POST /api/meals/analyze` は `analyze-meal`、`POST /api/menus/generate` は `generate-menu` に置き換わる。FEAT-08 は直接POSTのままで、**変わるのは宛先だけ**。`../../30_データ・IF設計/02_API設計.md §4.1・§4.2` の改訂が要る。~~（**解決**・2026-08-08）
+> **段3は改訂済み。** 同 §4.1 が Edge Function `analyze-meal`、同 §4.2 が `generate-menu` になっている。
+> どちらも冒頭に「旧 `POST /api/...` は廃止」と明記されている。
+> 旧パスは同 §3 末尾の対比表に残るだけである。
+> Gemini API の呼び出し仕様は同 §5.3 にあり、実装ワイヤの正本を本書 §1 と指している。
 
 ## 2. Google Gemini API status → 本PJ status 写像 `[仮]`
 > 📝 ここに外部システムのstatus値を本PJの状態（ST）へ写像する表を記載。正本は `01_DB物理設計.md` のenum・`30_データ・IF設計/03_ドメインイベント.md`。{外部status／区分／本PJ status／遷移ID}

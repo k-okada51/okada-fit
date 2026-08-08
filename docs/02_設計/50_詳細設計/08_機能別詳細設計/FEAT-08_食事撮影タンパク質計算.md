@@ -127,7 +127,11 @@ base64 化で約1.33倍になる。**最大でも約400KB。**
 > ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 > **ADR-0003（写真非保持）は改訂不要**（§10-12）。
 
-> ⚠️ 要確認（人間判断）: 段3との乖離は次の3点。`../../30_データ・IF設計/02_API設計.md` §4.1 の契約表の改訂が要る。
+> ~~⚠️ 要確認（人間判断）: 段3との乖離は次の3点。`../../30_データ・IF設計/02_API設計.md` §4.1 の契約表の改訂が要る。~~（**解決**・2026-08-08）
+> **段3は改訂済み。** 同 §4.1 が Edge Function `analyze-meal` の契約になっている。
+> 画像は「base64 にして JSON ボディに載せ、直接POSTする」と同 §4.1 に明記された。
+> 保存の第2段は PostgREST `meal_logs` の insert（同 §3・§4.1）。
+> 下表は旧契約との対比として残す。同 §3 末尾の対比表と一致する。
 
 | # | 段3の契約 | 本書 |
 |---|---|---|
@@ -225,10 +229,10 @@ sequenceDiagram
 {
   "food_name": "string",          // 表示専用・保存しない
   "dish_names": ["string"],       // 表示専用・保存しない
-  "calories_kcal": "float(>=0)",
-  "protein_g": "float(>=0)",
-  "sugar_g": "float(>=0)",
-  "fat_g": "float(>=0)"
+  "calories_kcal": "numeric(6,1)(>=0)",  // 小数第1位に丸めて返す（ADR-0022）
+  "protein_g": "numeric(6,1)(>=0)",
+  "sugar_g": "numeric(6,1)(>=0)",
+  "fat_g": "numeric(6,1)(>=0)"
 }
 ```
 
@@ -353,10 +357,10 @@ const res = await fetch(
 ```jsonc
 // Insert する行（日時2項目は API設計 §4.1 に定義が無いため本書で定義。§10-1 参照）
 {
-  "calories_kcal": "float(>=0) 必須",
-  "protein_g":     "float(>=0) 必須",
-  "sugar_g":       "float(>=0) 必須",
-  "fat_g":         "float(>=0) 必須",
+  "calories_kcal": "numeric(6,1)(>=0) 必須",
+  "protein_g":     "numeric(6,1)(>=0) 必須",
+  "sugar_g":       "numeric(6,1)(>=0) 必須",
+  "fat_g":         "numeric(6,1)(>=0) 必須",
   "eaten_date":    "date 必須",    // ISO 8601 (YYYY-MM-DD)。端末TZの当日をアプリが決める
   "eaten_time":    "time 任意"     // ISO 8601 (HH:mm)・null 可。端末時刻をアプリが決める
 }
@@ -416,10 +420,15 @@ RULE-006（写真からの栄養推定に AI を用いる）を実装する部�
 | `decodedLength(base64)` | Dart / TS | デコード後バイト長を求める | `len/4*3 − パディング数`。全体をデコードしない |
 | `assertImageInput(base64, mimeType)` | Dart / TS | 画像の入力検証 | MIME 許可リスト ∧ 1 KB ≤ `decodedLength` ≤ 1 MB `[仮]` ∧ マジックバイト一致 |
 | `validateNutrition(obj)` | TS | AI出力の妥当域判定 | 4項目それぞれ `0 <= v <= 上限`（§3.4）。1つでも外れたら不合格 |
+| `round1Nutrition(obj)` | TS | **AI応答を小数第1位に丸める**（ADR-0022） | 4項目それぞれ `Math.round(v * 10) / 10`。妥当域判定の**後**に適用し、丸めた値を返す |
 | `atwaterDeviation(obj)` | TS / Dart | 栄養値の内部整合の目安 | `est = 4*protein_g + 4*sugar_g + 9*fat_g` |
 | 同上 | 同上 | 同上 | `dev = abs(calories_kcal - est) / max(est, 1)` |
 | `toMealLogRow(input)` | Dart | 保存行の組み立て | 栄養4項目＋`eaten_date`/`eaten_time` のみを写す |
 | 同上 | 同上 | 同上 | `food_name`・`dish_names` は**写さない** |
+
+- **AI（EXT-01）の応答は小数第1位に丸めて保存する**（ADR-0022）。Gemini は任意の小数を返しうる。
+- 列は `numeric(6,1)`。丸めずに送ると DB 側で丸められ、画面に出した値と保存値がずれる。
+- 丸めは Edge Function 側で行う。返す値と保存する値を同一にするため。
 
 ### Atwater整合の扱い
 
@@ -714,6 +723,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 16 | NFR-SEC-05 を掲げながら実装しない（#11 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない。**指摘の内容は `FEAT-03_AIメニュー提案.md` §10 #18 と同じ**。要件側への申し送りも同書に集約する | 🟡 中 |
 | 17 | ~~`thinking_level` の値に根拠が無い~~（**解決**） | ~~ADR-0001 の `high` は旧パラメータ体系の実測で根拠が失われた~~ → **`medium` を採用**（2026-08-08・ADR-0018）。既定であり公式の推奨。`high` を選び直す根拠が無い。精度が足りなければ `high` へ上げる（1行の変更で戻せる。ADR-0018 の ⚠️ に残課題） | — |
 | 18 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
+| 19 | **`supabase_flutter` が `numeric` をどう返すか未確認** | 栄養4項目を `numeric(6,1)` に変えた（ADR-0022）。PostgreSQL の `numeric` は、ドライバによって**文字列で返る**ことがある。`.select()` の返り値で `double.parse` が要るかもしれない。**変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。Dart 側の型は `double` のまま | 🟡 中 |
 
 > ~~⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。~~（**解決**・2026-08-08）
 > ~~直接呼び出しで宣言的フォールバックが失われる点を、許容するか代替を実装するかを決めてください。~~
@@ -721,6 +731,11 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 > **ADR-0011** を起票し、フォールバック不在の受容を明記しました。ADR-0001 は Superseded です。
 > ADR-0002 は **ADR-0010** で置換しました。
 > ADR-0003（写真非保持）は当初方針どおりのため改訂は不要です。
+
+> ⚠️ 要確認（人間判断）: #19 `supabase_flutter` が `numeric` を数値で返すか文字列で返すか（🟡 中）。
+> `numeric` は、ドライバによって**文字列で返る**ことがある。Dart 側で `double.parse` が要るかもしれない。
+> **変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。
+> 対象は `meal_logs` の栄養4項目。Edge Function の応答（JSON 数値）は影響を受けない。
 
 > ⚠️ 要確認（人間判断）: #13 Edge Function のリクエストボディ上限は未文書化です。
 > 実装着手時に実サイズ（base64 で約400KB）の画像で疎通を1回検証し、結果を本書に記録してください。

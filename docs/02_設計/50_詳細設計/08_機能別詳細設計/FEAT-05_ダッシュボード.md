@@ -50,7 +50,9 @@ SCR-01（ダッシュボード）を開いた時点で、当日のタンパク�
 | 例外 | `target_g` と `rate_pct` だけは Flutter 側で算出する（**確定**・§10-12） |
 
 - 旧構成の `GET /api/dashboard?period=` は廃止する。
-- 段3（`../../30_データ・IF設計/02_API設計.md §4.3`）の契約表は RPC 契約への改訂が要る。
+- ~~段3（`../../30_データ・IF設計/02_API設計.md §4.3`）の契約表は RPC 契約への改訂が要る。~~（**解決**・2026-08-08）
+- **段3は改訂済み。** 同 §4.3 が `supabase.rpc('get_dashboard', params: {...})` の契約になっている。
+- 引数6本（`p_period`・`p_today`・`p_range_*`・`p_month_*`）と戻り値3要素も同 §4.3 にある。
 
 ## 2. 処理フロー
 
@@ -145,8 +147,8 @@ final json = await supabase.rpc('get_dashboard', params: {
 ```jsonc
 {
   "protein_gauge": {            // 体重未設定なら、この階層ごと null（確定・§10-4）
-    "weight_kg": "float",       // users.weight_kg。常に当日の値で period に依存しない
-    "intake_g": "float"         // 当日の meal_logs.protein_g 合計。記録なしは 0
+    "weight_kg": "numeric(6,1)",  // users.weight_kg。常に当日の値で period に依存しない
+    "intake_g": "numeric(6,1)"    // 当日の meal_logs.protein_g 合計。記録なしは 0
   },
   "training_count": {           // 常に今月。period に依存しない
     "done_days": "int",         // 今月の実施日数（heatmap と同一条件）
@@ -319,7 +321,7 @@ resolveDateRange(period, now, timeZone):                    # L5・案A（確定
 -- $1 = user_id, $2 = today（§5.1 で解決した暦日・date）
 SELECT u.weight_kg,
        u.target_training_count,
-       COALESCE(SUM(m.protein_g), 0)::float8 AS intake_g
+       COALESCE(SUM(m.protein_g), 0)::numeric(6,1) AS intake_g
 FROM users u
 LEFT JOIN meal_logs m
        ON m.user_id = u.id
@@ -408,9 +410,9 @@ set search_path = public
 as $$
 declare
   v_user_id uuid;          -- users.id は auth.users.id と同値の uuid（案A・ADR-0005）
-  v_weight  numeric;
+  v_weight  numeric(6,1);
   v_target  int;
-  v_intake  float8;
+  v_intake  numeric(6,1);
   v_done    int;
   v_heatmap json;
 begin
@@ -438,7 +440,7 @@ begin
     from (
       SELECT u.weight_kg,
              u.target_training_count,
-             COALESCE(SUM(m.protein_g), 0)::float8 AS intake_g
+             COALESCE(SUM(m.protein_g), 0)::numeric(6,1) AS intake_g
       FROM users u
       LEFT JOIN meal_logs m
              ON m.user_id = u.id
@@ -657,6 +659,7 @@ $$;
 | 12 | ~~RULE-001 の計算場所~~（**解決**） | **Dart 側算出で確定**（2026-08-08・E群D・FEAT-07 §4.5）。RPC は `weight_kg`・`intake_g` を素のまま返し、`target_g`・`rate_pct` は Dart が計算する。`protein_gauge` の契約は元から素の値のため**変更なし**。式が1か所になり、画面ごとに数字がずれない。SCR-05 のプレビューも通信なしで出る | — |
 | 13 | 過去期間の達成率が遡って書き換わる | 体重は現在値1点のみを持つと確定した（ADR-0009）。`weight_kg` に履歴が無いため、過去日・過去期間のゲージも**現在の体重**で `target_g` を計算する。体重を変えると過去の達成率が事後的に変わる。SCR-01 に**誤解を与えないUI表現が要る**（どの体重を基準にした値かの明示・注記） | 🟡 中 |
 | 14 | 端末時刻を信頼する副作用 | #1 の確定により日付は端末TZで決まる。利用者が端末の日付を変えると、記録日と集計日がずれる。RPC 側に検知手段は無く、補正もしない。自己申告データの範囲にとどまるため受容する | 🟢 低 |
+| 15 | **`supabase_flutter` が `numeric` をどう返すか未確認** | 栄養値・体重を `numeric(6,1)` に変えた（ADR-0022）。PostgreSQL の `numeric` は、ドライバによって**文字列で返る**ことがある。`weight_kg`・`intake_g` の受け取りに `double.parse` が要るかもしれない。**変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。Dart 側の型は `double` のまま | 🟡 中 |
 
 > ~~⚠️ 要確認（人間判断）: #1 日付範囲の解決を Flutter（端末TZ・案A）にするか RPC 内の固定TZ（案B）にするか。~~（**解決**・2026-08-08）
 > **案A で確定**。記録側（FEAT-04・FEAT-08）の日付採番も端末TZに揃える。
@@ -683,6 +686,11 @@ $$;
 > ~~⚠️ 要確認（人間判断）: #12 RULE-001 を Dart 側のみに置き、RPC は `weight_kg` を返すだけとする方針でよいか。~~（**解決**・2026-08-08）
 > **その方針で確定した。** RPC は素の値だけを返す。`get_dashboard` の契約に変更は無い。
 > FEAT-09 の `get_protein_remaining` も同じ方針に揃えた。正本は FEAT-07 §4.5。
+
+> ⚠️ 要確認（人間判断）: #15 `supabase_flutter` が `numeric` を数値で返すか文字列で返すか（🟡 中）。
+> `numeric` は、ドライバによって**文字列で返る**ことがある。Dart 側で `double.parse` が要るかもしれない。
+> **変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。
+> 対象は `protein_gauge.weight_kg`・`protein_gauge.intake_g` の2つ。
 
 > ⚠️ 要確認（人間判断）: #13 過去期間のゲージを「現在の体重が基準」と分かる表現にするか。ADR-0009 により体重履歴は持たないため、表現でしか解けない。案は次の3つ。
 >

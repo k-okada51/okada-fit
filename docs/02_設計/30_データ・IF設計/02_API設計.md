@@ -46,7 +46,7 @@ status: draft
 | ページング/ソート/フィルタ | データ小規模のため当面ページングなし。並び順は各機能設計で指定する |
 | 期間指定 | RPC 引数で渡す。`p_period`＝`day`/`week`/`month`、範囲は `p_range_start`・`p_range_end`（date） |
 | 「当日」の基準 | **日付はアプリが端末のタイムゾーンで決めて渡す。RPC 内で `CURRENT_DATE` を使わない**（2026-08-08 確定・ADR-0014） |
-| 日時・数値・enum 表現 | 日時=ISO 8601（`date`/`time`）。栄養値=`float`、回数等=`int`。enum=`body_part`（胸/背中/脚/肩/腕） |
+| 日時・数値・enum 表現 | 日時=ISO 8601（`date`/`time`）。栄養値・体重=`numeric(6,1)`（ADR-0022・小数第1位）、回数等=`int`。enum=`body_part`（胸/背中/脚/肩/腕） |
 | 命名 | キー・列名は snake_case。RPC 引数は `p_` 接頭辞（`../50_詳細設計/06_DB設計規約.md §5`） |
 | 冪等性・リトライ | 参照系は冪等。AI呼び出し（`analyze-meal`／`generate-menu`）は非冪等・**自動リトライしない**（従量課金のため）。429時のみ指数バックオフ |
 | レート制限 | AI呼び出しはコスト・悪用防止のため制限（NFR-SEC-05）。閾値は実装時 |
@@ -199,10 +199,10 @@ status: draft
 {
   "food_name": "string",          // 表示専用・保存しない
   "dish_names": ["string"],       // 表示専用・保存しない
-  "calories_kcal": "float(>=0)",
-  "protein_g": "float(>=0)",
-  "sugar_g": "float(>=0)",
-  "fat_g": "float(>=0)"
+  "calories_kcal": "numeric(6,1)(>=0)",
+  "protein_g": "numeric(6,1)(>=0)",
+  "sugar_g": "numeric(6,1)(>=0)",
+  "fat_g": "numeric(6,1)(>=0)"
 }
 // Error（共通契約） 400/401/402/413/415/422/429/500/502/504（§5）
 ```
@@ -301,8 +301,8 @@ status: draft
 // 戻り値（json 1値・型のみ）
 {
   "protein_gauge": {                 // 常に当日。体重が未設定なら protein_gauge ごと null
-    "weight_kg": "float(>0)",        // users.weight_kg をそのまま返す
-    "intake_g":  "float(>=0)"        // 当日の meal_logs.protein_g 合計。記録なしは 0
+    "weight_kg": "numeric(6,1)(>0)",  // users.weight_kg をそのまま返す
+    "intake_g":  "numeric(6,1)(>=0)"  // 当日の meal_logs.protein_g 合計。記録なしは 0
   },
   "training_count": {                // 今月の実施状況。p_period に依存しない
     "done_days": "int(>=0)",         // 今月の実施日数。heatmap と同じ条件で数える
@@ -378,10 +378,10 @@ status: draft
 ```jsonc
 // 戻り値（jsonb・型のみ）
 {
-  "weight_kg": "float(>0) | null",   // users.weight_kg をそのまま返す。未設定は null
-  "intake_g":  "float(>=0)",         // 当日の meal_logs.protein_g 合計。記録なしは 0
-  "foods_candidates": [              // RULE-005 の母集合。並べ替えず id 昇順で返す
-    { "id": "bigint", "food_name": "string", "protein_amount": "float(>=0)" }  // 1食分あたり（ADR-0012）
+  "weight_kg": "numeric(6,1)(>0) | null",  // users.weight_kg をそのまま返す。未設定は null
+  "intake_g":  "numeric(6,1)(>=0)",        // 当日の meal_logs.protein_g 合計。記録なしは 0
+  "foods_candidates": [                    // RULE-005 の母集合。並べ替えず id 昇順で返す
+    { "id": "bigint", "food_name": "string", "protein_amount": "numeric(6,1)(>=0)" }  // 1食分あたり（ADR-0012）
   ]
 }
 ```
@@ -537,9 +537,14 @@ Edge Function 側の実行上限（2026-08-08 確認済み）。打ち切りは�
 
 > ⚠️ 要確認（人間判断）: `ERR-AI-QUOTA`(429) は**当日中に回復しない**。`ERR-AI-RATE` と同じ「時間をおいて再試行」の文言だと、利用者が無駄に再操作する。文言と導線を分けるかを確定する。
 
-> ⚠️ 要確認（人間判断）: `ERR-AI-TIMEOUT` の `retryable` が段5と食い違う。`../50_詳細設計/07_実装共通設計パターン.md §4` は `true` としている。本書は **`false`** を正とする。再送が二重課金になり、時間予算も超えるため。段5側の追随が要る。
+> ~~⚠️ 要確認（人間判断）: `ERR-AI-TIMEOUT` の `retryable` が段5と食い違う。段5は `true` としている。~~（**解決**・2026-08-08）
+> **段5は追随済み。** `../50_詳細設計/07_実装共通設計パターン.md §1・§4` はいずれも `false` になっている。
+> 全設計文書で `ERR-AI-TIMEOUT` は `retryable: false` に統一されている。
 
-> ⚠️ 要確認（人間判断）: `ERR-AI-SCHEMA`(502) と機能別 ERR が重複している。FEAT-08 は同じ事象を `ERR-MEAL-004`(422)、FEAT-03 は `ERR-MENU-004` に割り当てている `[仮]`。共通ERRへ寄せるか、機能別ERRを残して共通ERRを内部区分にとどめるかを確定する。
+> ~~⚠️ 要確認（人間判断）: `ERR-AI-SCHEMA`(502) と機能別 ERR が重複している。~~（**解決**・2026-08-08）
+> **共通ERR（`ERR-AI-SCHEMA`）へ寄せた。** 構造化出力の検証失敗は全機能でこれ1つを使う。
+> `ERR-MEAL-004`・`ERR-MENU-004` は**欠番**にした（FEAT-08 §6・FEAT-03 §6）。**採番は繰り上げない。**
+> 理由は、同じ事象に機能ごとの ERR を割ると原因の切り分けが機能数だけ増えるため。
 
 > ⚠️ 要確認（人間判断）: Edge Function の**リクエストボディ上限が未文書化**。`analyze-meal` は base64 後で約400KB のため詰まる公算は低いが、実装時に1回検証する。検索で出る「10MB」は**デプロイサイズ**であり別物。
 

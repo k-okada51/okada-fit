@@ -172,7 +172,8 @@ sequenceDiagram
 - **提案そのものを指す ID は無い。** Edge Function が保存しないため（§5）。
 - 提案は Flutter の画面状態としてのみ保持する。画面を離れると消える（§7）。
 - 旧契約 `POST /api/menus/generate`（段3 `02_API設計.md §4.2`）は**廃止**。Edge Function `generate-menu` に置き換わる。
-- 段3の契約表の改訂が要る（§10 #12）。
+- ~~段3の契約表の改訂が要る（§10 #12）。~~（**解決**・2026-08-08）
+- **段3は改訂済み。** 同 `02_API設計.md §4.2` が Edge Function `generate-menu` の契約になっている。同 §3 の一覧・§2 も同じ（§10 #12）。
 - 前段（FEAT-02）で器具が0件のとき、この呼び出しは発行されない（§1・§7）。
 
 ### 3.2 Edge Function → Gemini API（EXT-01・実装仕様）

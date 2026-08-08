@@ -186,7 +186,7 @@ class RowError { final int line; final String column; final String reasonCode; }
 |---|---|---|---|
 | 拡張子 | `.csv` であること | ERR-FOOD-008 | `file_picker` の `allowedExtensions` |
 | ファイル選択 | `file_picker` の結果が1件あること | ERR-FOOD-001 | 複数選択は受け付けない |
-| 列構成 | `name`（食品名・text）／`protein_amount`（タンパク質量・float）の**2列のみ** | ERR-FOOD-006 | `foods` の列（`../01_DB物理設計.md §1.5`） |
+| 列構成 | `name`（食品名・text）／`protein_amount`（タンパク質量・`numeric(6,1)`）の**2列のみ** | ERR-FOOD-006 | `foods` の列（`../01_DB物理設計.md §1.5`） |
 | `protein_amount` の意味 | **1食分あたり**のタンパク質量(g)。100g あたりではない | — | ADR-0012（2026-08-08 確定） |
 | CSVに含めない列 | `id` ／ `created_at` | — | DB採番のため |
 | 列順 | ヘッダ名で解決（順不同可） | — | 列取り違え防止 |
@@ -233,6 +233,8 @@ class RowError { final int line; final String column; final String reasonCode; }
 
 - 上表の違反はすべて ERR-FOOD-002 に集約する。`reason_code` で理由を特定する。
 - `protein_amount` の範囲は `foods.protein_amount` の CHECK(≥0) と整合させる。
+- **小数第2位以下は DB 側で丸められる**。列は `numeric(6,1)`（ADR-0022）。`20.55` は `20.6` で保存される。
+- 桁数エラーにはしない。丸めは仕様であり、上限 1000 は `numeric(6,1)` の最大 `99999.9` に収まる。
 - ファイル全体の規則（拡張子・サイズ・文字コード・ヘッダ・行数）と対応 ERR-ID は §3.3。
 
 **重複の扱いは2種類ある。混同しない。**
@@ -373,7 +375,7 @@ class RowError { final int line; final String column; final String reasonCode; }
 
 ```sql
 -- 追加＋重複スキップ: バルクINSERT を1トランザクションに閉じる。
--- $1 = 検証済み・正規化済み行の配列（jsonb）: [{"name": <text>, "protein_amount": <float>}, ...]
+-- $1 = 検証済み・正規化済み行の配列（jsonb）: [{"name": <text>, "protein_amount": <numeric>}, ...]
 -- 衝突判定は uq_foods_name（foods(name) の UNIQUE INDEX・01_DB物理設計.md §1.5）。
 -- supabase_flutter の .insert() でも on conflict は書けるが、件数の内訳を1往復で返す目的で
 -- DB関数（RPC）にまとめる。
@@ -388,7 +390,7 @@ begin
   with i as (
     insert into foods (name, protein_amount)
     select r.name, r.protein_amount
-      from jsonb_to_recordset(p_rows) as r(name text, protein_amount float8)
+      from jsonb_to_recordset(p_rows) as r(name text, protein_amount numeric(6,1))
     on conflict (name) do nothing
     returning 1
   ) select count(*) into v_inserted from i;
@@ -700,7 +702,14 @@ SCR-05 設定・プロフィール内の「食事マスタ取込」セクショ�
 > ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。一方 ADR-0001・ADR-0002・段3の API 契約は Vercel 前提のまま。後継ADRの起票と段3の改訂が必要。~~（**解決**・2026-08-08）
 > **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票し、ADR-0001・ADR-0002 は Superseded にした。段3 `30_データ・IF設計/02_API設計.md` も改訂済み。
 
-> ⚠️ 要確認（人間判断）: 段3の契約改訂が要る。旧 `POST /api/foods/import`（multipart/form-data）は廃止し、RPC `import_foods(jsonb)` に置き換わる。`02_API設計.md` の契約表から本エンドポイントを削除し、RPC の引数（`p_rows`）・戻り値（`inserted_count` / `skipped_count`）を載せること（#13）。
+> ~~⚠️ 要確認（人間判断）: 段3の契約改訂が要る。旧 `POST /api/foods/import`（multipart/form-data）は廃止し、RPC `import_foods(jsonb)` に置き換わる。`02_API設計.md` の契約表から本エンドポイントを削除し、RPC の引数（`p_rows`）・戻り値（`inserted_count` / `skipped_count`）を載せること（#13）。~~（**契約表のみ解決**・2026-08-08）
+> **契約表は改訂済み。** `../../30_データ・IF設計/02_API設計.md §3` が `rpc('import_foods', {p_rows})` になっている。
+> 同 §2 の一覧も RPC `import_foods`。旧 `POST /api/foods/import` は同 §3 末尾の対比表に残るだけである。
+
+> ⚠️ 要確認（人間判断）: 段3 に `import_foods` の**戻り値の契約が無い**（#13 の残り）。
+> `../../30_データ・IF設計/02_API設計.md §4` は 4.1〜4.4 の4本だけで、FEAT-10 の節が存在しない。
+> 同 §3 の行にも `ON CONFLICT (name) DO NOTHING` としか書かれていない。
+> `inserted_count` / `skipped_count` を返す契約を同 §4 に足すこと。本書 §3.2 が値の正本になる。
 
 > ⚠️ 要確認（人間判断）: 正規化はカタカナの表記ゆれを吸収しない。`鶏むね肉` と `鶏ムネ肉` が別行として両方入ることを受容するか、正規化を強めるかの判断が要る。強める場合は既に入っている行の移行も要る（#14）。
 

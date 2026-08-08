@@ -490,14 +490,20 @@ PostgREST 呼び出しと、それが発行する SQL の対応。
 > **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
 > ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
-> ⚠️ 要確認（人間判断）: 段3 との具体的な乖離。
+> ~~⚠️ 要確認（人間判断）: 段3 との具体的な乖離。~~（**解決**・2026-08-08）
 >
-> - `GET /api/profile` と `PUT /api/profile` は**廃止**する
-> - 代わりに `users` への PostgREST 直接アクセスに置き換わる
-> - `../../30_データ・IF設計/02_API設計.md §3` のプロフィール契約表の改訂が要る
-> - `../06_DB設計規約.md §5` の「APIパスは kebab-case」規約は適用対象が無くなる
-> - HTTP ステータス（200/400/401/404/500）前提の記述も読み替えが要る
-> - 読み替え先は `PostgrestException` ベース
+> - ~~`GET /api/profile` と `PUT /api/profile` は**廃止**する~~
+> - ~~代わりに `users` への PostgREST 直接アクセスに置き換わる~~
+> - ~~`../../30_データ・IF設計/02_API設計.md §3` のプロフィール契約表の改訂が要る~~
+> - ~~`../06_DB設計規約.md §5` の「APIパスは kebab-case」規約は適用対象が無くなる~~
+> - ~~HTTP ステータス（200/400/401/404/500）前提の記述も読み替えが要る~~
+> - ~~読み替え先は `PostgrestException` ベース~~
+>
+> **段3は改訂済み。** `../../30_データ・IF設計/02_API設計.md §3` が PostgREST 直接アクセスになっている。
+> 記載は `from('users').select(...).single()` ／ `.update(patch)`。同 §2 も PostgREST `users` である。
+> 旧 `GET/PUT /api/profile` は同 §3 末尾の対比表に残るだけである。
+> HTTP ステータス前提の記述は同 §5.1・§5.4 で `PostgrestException` ベースに置き換わった。
+> `../06_DB設計規約.md §5` の kebab-case 規約も、対象が Edge Function 名だけに直っている。
 
 > 論点1 の決着（2026-08-08・ADR-0005）: **案A**（`users.id` を uuid にして `auth.users.id` と同値にする）。
 >

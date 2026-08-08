@@ -604,11 +604,16 @@ CREATE INDEX ix_train_machines_gym         ON training_machines(gym_id);
 > - ~~`30_データ・IF設計/02_API設計.md`（`/api/*` の Route Handler 契約）も同じ。~~
 > - **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
 > - ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
-> ⚠️ 要確認（人間判断）: **段3の `GET /api/machines?body_part=` は改訂が要る。**
-> - 本書では PostgREST 直接（`training_menus` の埋め込み select）に置き換えた。
-> - 段3の契約表から本エンドポイントを削除し、テーブル直アクセスとして書き直す。
-> - 絞り込み条件に `gym_id` を加える（2026-08-08 決定・#3）。
-> - HTTPステータス（400/401/500）前提のERR定義も `PostgrestException` ベースへ読み替える。
+> ~~⚠️ 要確認（人間判断）: **段3の `GET /api/machines?body_part=` は改訂が要る。**~~（**解決**・2026-08-08）
+> - ~~本書では PostgREST 直接（`training_menus` の埋め込み select）に置き換えた。~~
+> - ~~段3の契約表から本エンドポイントを削除し、テーブル直アクセスとして書き直す。~~
+> - ~~絞り込み条件に `gym_id` を加える（2026-08-08 決定・#3）。~~
+> - ~~HTTPステータス（400/401/500）前提のERR定義も `PostgrestException` ベースへ読み替える。~~
+> **段3は改訂済み。** `../../30_データ・IF設計/02_API設計.md §3` がテーブル直アクセスになっている。
+> 記載は `from('training_menus').select(埋め込み).eq('body_part', …)`（3ホップ・`DISTINCT`）。
+> `gym_id` での絞り込みも同 §3 の絞り込み実装表に「2026-08-08 確定」として載った。
+> 旧 `GET /api/machines?body_part=` は同 §3 末尾の対比表に残るだけである。
+> ERR は同 §5.1・§5.4 で `PostgrestException` の SQLSTATE 写像に置き換わった。
 > ~~要確認（人間判断）: #1 器具0件のとき FEAT-03（AIメニュー生成）へ進ませるか。~~（**解決**・2026-08-08）
 > - **進ませない。** 器具0件のとき［メニュー生成］を非活性にする（§7）。
 > - 代わりに器具登録（SCR-02）への導線を出す。

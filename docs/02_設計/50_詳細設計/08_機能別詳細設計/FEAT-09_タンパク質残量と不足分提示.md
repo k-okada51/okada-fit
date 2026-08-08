@@ -127,10 +127,10 @@ sequenceDiagram
 ```jsonc
 // 戻り値（型の枠のみ・実データは書かない）
 {
-  "weight_kg": "float(>0) | null",   // users.weight_kg をそのまま返す。未設定は null
-  "intake_g":  "float(>=0)",         // 当日の meal_logs.protein_g 合計。記録なしは 0
-  "foods_candidates": [              // RULE-005 の母集合。並べ替えず id 昇順で返す
-    { "id": "bigint", "food_name": "string", "protein_amount": "float(>=0)" }  // 1食分あたりのg（ADR-0012）
+  "weight_kg": "numeric(6,1)(>0) | null",  // users.weight_kg をそのまま返す。未設定は null
+  "intake_g":  "numeric(6,1)(>=0)",        // 当日の meal_logs.protein_g 合計。記録なしは 0
+  "foods_candidates": [                    // RULE-005 の母集合。並べ替えず id 昇順で返す
+    { "id": "bigint", "food_name": "string", "protein_amount": "numeric(6,1)(>=0)" }  // 1食分あたりのg（ADR-0012）
   ]
 }
 ```
@@ -286,8 +286,8 @@ security invoker
 set search_path = public
 as $$
 declare
-  v_weight double precision;
-  v_intake double precision;
+  v_weight numeric(6,1);
+  v_intake numeric(6,1);
   v_result jsonb;
 begin
   -- 旧 Q1 に相当: 体重＋当日のタンパク質摂取合計を1文で取得
@@ -508,6 +508,13 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | 12 | ~~RULE-001 の係数と丸めが `nutrition.dart`（FEAT-07）と本 RPC に二重定義されている（§4.3）~~（**解決**） | **RPC から式と丸めを取り除いた**（2026-08-08）。係数 2.0 も `round(v::numeric, 1)` も関数本体に無い。式は `nutrition.dart` の1か所だけになり、SCR-05 と SCR-01 の食い違いが構造的に起きない。回帰は TC-FEAT09-19 で検出する | — |
 | 13 | 共通マスタは認証済みなら誰でも書き換えられる（#1 の確定に伴う新規） | `foods` の RLS は `TO authenticated USING (true)`。単一利用者の現行運用では実害が無いが、複数利用者（NFR-SCALE-01・Phase2）では他人の食品マスタを壊せる。Phase2 で書き込みを分離する見直しが要る | 🟡 中 |
 | 14 | `foods` を全件転送する（#11・#12 の確定に伴う新規） | 候補の絞り込みが Dart 側へ移り、RPC は `foods` の全行を返す。数百件想定（NFR-MIGR-02）では体感に出ないが、CSV が数千件に増えると SCR-01 の初期表示（NFR-PERF-01）に効く。件数が増えたら RPC 側での粗い絞り込みを再検討する | 🟢 低 |
+| 15 | **`supabase_flutter` が `numeric` をどう返すか未確認** | 栄養値・体重を `numeric(6,1)` に変えた（ADR-0022）。PostgreSQL の `numeric` は、ドライバによって**文字列で返る**ことがある。`weight_kg`・`intake_g`・`protein_amount` の受け取りに `double.parse` が要るかもしれない。**変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。Dart 側の型は `double` のまま | 🟡 中 |
+
+> ⚠️ 要確認（人間判断）: #15 `supabase_flutter` が `numeric` を数値で返すか文字列で返すか（🟡 中）。
+> `numeric` は、ドライバによって**文字列で返る**ことがある。Dart 側で `double.parse` が要るかもしれない。
+> **変換を1箇所に集約する**設計にしておき、実装初日に実挙動を確認する。
+> 対象は `weight_kg`・`intake_g`・`foods_candidates[].protein_amount` の3つ。
+> 文字列のまま比較すると RULE-002 の残量判定（0 か否か）が壊れる。
 
 > ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
 > ~~一方 ADR-0001（Vercel AI Gateway 採用）・ADR-0002（Next.js + Mantine 採用）は Vercel 前提のまま。~~
@@ -516,10 +523,14 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 > **ADR-0010**（Flutter + Supabase）と **ADR-0011**（Gemini API 直接）を起票した。
 > ADR-0001・ADR-0002 は Superseded にした。段3も改訂済み。
 
-> ⚠️ 要確認（人間判断）: 段3の契約表を改訂すること。
-> 旧 `GET /api/protein/remaining` は RPC `get_protein_remaining` に置き換わる。
-> HTTPメソッド・パス・ステータスコードを前提とした契約が成立しない。
-> `../../30_データ・IF設計/02_API設計.md §4.4` を RPC の引数・戻り値・SQLSTATE 写像の形に書き直すこと。
+> ~~⚠️ 要確認（人間判断）: 段3の契約表を改訂すること。~~（**解決**・2026-08-08）
+> ~~旧 `GET /api/protein/remaining` は RPC `get_protein_remaining` に置き換わる。~~
+> ~~HTTPメソッド・パス・ステータスコードを前提とした契約が成立しない。~~
+> ~~`../../30_データ・IF設計/02_API設計.md §4.4` を RPC の引数・戻り値・SQLSTATE 写像の形に書き直すこと。~~
+> **段3は改訂済み。** 同 §4.4 が `supabase.rpc('get_protein_remaining', params: {...})` になっている。
+> 引数は `p_target_date` の1本。旧 `p_limit` は削除された、と同 §4.4 に明記されている。
+> 戻り値も `weight_kg`・`intake_g`・`foods_candidates` の素の値だけに差し替わった。
+> SQLSTATE 写像は同 §5.4。旧 `GET /api/protein/remaining` は同 §3 末尾の対比表に残るだけである。
 
 > ~~⚠️ 要確認（人間判断）: 候補抽出を RPC 内の `ORDER BY` / `LIMIT` で行う方針（§5.1 の (a)）を承認するか。~~（**解決**・2026-08-08）
 > ~~承認する場合、`../07_実装共通設計パターン.md` の「RPC には永続化だけを置く」方針に集計系 RPC の例外を明記すること（#11）。~~
