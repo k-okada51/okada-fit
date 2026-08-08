@@ -27,7 +27,7 @@ status: draft
 |---|---|
 | 対応要件 | FEAT-07（1日の必要タンパク質量の算出＝体重×2g/日） |
 | 対応画面 | SCR-01 ダッシュボード（ゲージの目標値）／ SCR-05 設定・プロフィール（体重入力時の算出プレビュー） |
-| 対応API | **専用APIなし**。`users` の PostgREST 取得値（`supabase.from('users').select('weight_kg')`）から算出する。RPC `get_dashboard`（FEAT-05）・RPC `get_protein_remaining`（FEAT-09）が内部で使用 |
+| 対応API | **専用APIなし**。`users` の PostgREST 取得値（`supabase.from('users').select('weight_kg')`）から算出する。RPC `get_dashboard`（FEAT-05）・RPC `get_protein_remaining`（FEAT-09）が返す `weight_kg` にも本関数を適用する |
 | 関連ルール | RULE-001（必要量＝体重×2g）。RULE-002（残量＝必要量−摂取量）の被参照側 |
 | 外部連携 | なし（AI不使用・決定的処理） |
 | 性能目標 | NFR-PERF-02（決定的処理 ≤1秒）。実体は O(1) の算術。呼び出し側の NFR-PERF-01（画面表示 ≤2秒）に対しほぼ無視できる |
@@ -45,27 +45,27 @@ FEAT-07 は独立したエンドポイントを持たない。実体は**算出�
 |---|---|
 | 式 | RULE-001。必要量 ＝ `users.weight_kg` × 2g |
 | 根拠 | DEC-B06 |
-| 共有先 | FEAT-05（`protein_gauge.target_g`） |
-| 共有先 | FEAT-09（`target_g` と残量計算の基準値） |
+| 共有先 | FEAT-05（`protein_gauge.weight_kg` から Dart が算出） |
+| 共有先 | FEAT-09（`weight_kg` から目標値と残量を Dart が算出） |
 
 ### 式の置き場所が2つに割れる
 
-| 論点 | 旧構成 | 新構成 |
+| 論点 | 旧構成 | 新構成（2026-08-08 確定） |
 |---|---|---|
-| 式の置き場所 | TypeScript の純関数 1箇所 | **Dart（アプリ）と SQL（RPC）の2箇所に分かれ得る** |
-| 集計の実行場所 | サーバ（1言語） | DB 側（SQL）とアプリ側（Dart）に分離 |
-| 不一致リスク | 低 | **高**（§4.5 が本書の中心論点） |
+| 式の置き場所 | TypeScript の純関数 1箇所 | **Dart の純関数 1箇所**（`nutrition.dart`） |
+| 集計の実行場所 | サーバ（1言語） | 集計は SQL、**算出は Dart** |
+| 不一致リスク | 低 | 低（式が1か所のため） |
 
-Flutter + Supabase 構成では、集計が SQL 側へ移る。
+一度は「集計が SQL 側へ移るなら式も SQL へ移る」と考えた。採らない。
 
 | 呼び出し元 | 計算場所 | 理由 |
 |---|---|---|
-| FEAT-05 の RPC `get_dashboard` | SQL | 集計と同じクエリ内で組み立てる |
-| FEAT-09 の RPC `get_protein_remaining` | SQL | 同上 |
+| FEAT-05 の RPC `get_dashboard` | Dart | RPC は `weight_kg`・`intake_g` を素のまま返す |
+| FEAT-09 の RPC `get_protein_remaining` | Dart | RPC は `weight_kg`・`intake_g`・候補行を素のまま返す |
 | SCR-05 の保存前プレビュー | Dart | 往復を待たせない |
 
-**このままだと同じ式が2言語に現れる。旧構成（1箇所）より悪化している。**
-対策の3案と推奨は §4.5 に置く。
+**式は Dart の1箇所に置く。SQL には書かない。**
+3案の比較と採否は §4.5 に置く。
 
 ### TDD の起点
 
@@ -88,33 +88,34 @@ flowchart TD
   RPC_REM --> SQLREAD
   REST_PROF --> RESTREAD["PostgREST: users.weight_kg<br/>（RLS: 本人行のみ）"]
 
-  SQLREAD --> CALC_SQL["calc_target_protein_g(weight_kg)<br/>supabase/migrations/*.sql（案(a)・[仮]）"]
+  SQLREAD --> RAW["RPC は weight_kg を素のまま返す<br/>（SQL では算出しない・2026-08-08 確定）"]
   RESTREAD --> CALC_DART["calcTargetProteinG(weightKg)<br/>app/lib/domain/nutrition.dart（FEAT-07・純関数）"]
+  RAW --> CALC_DART
 
-  CALC_SQL --> V{"weight_kg の判定"}
-  CALC_DART --> V
+  CALC_DART --> V{"weight_kg の判定"}
   V -->|"NULL"| UNSET["status = 'weight_unset'"]
   V -->|"0以下 / 非有限"| INVALID["status = 'weight_invalid'"]
   V -->|"有限かつ 0超"| OK["status = 'ok'<br/>target_g = round1(weight_kg × 2.0)"]
 
   UNSET --> MAP020["Flutter が ERR-PROFILE-020 へ写像<br/>（SCR-05 へ誘導）"]
   INVALID --> MAP021["Flutter が ERR-PROFILE-021 へ写像<br/>（データ不整合としてログ）"]
-  OK --> USE1["FEAT-05: protein_gauge.target_g<br/>rate_pct = intake_g / target_g × 100（100%頭打ち）"]
+  OK --> USE1["FEAT-05: rate_pct = intake_g / target_g × 100（100%頭打ち）"]
   OK --> USE2["FEAT-09: remaining_g = max(0, target_g − intake_g)（RULE-002）"]
   OK --> USE3["FEAT-06: SCR-05 の算出プレビュー"]
 ```
 
 | 観点 | 内容 |
 |---|---|
-| 実行位置 | 読み取りの後・戻り値組み立ての前。関数はI/Oを持たないため、トランザクション境界の内外どちらでも結果は同じ |
+| 実行位置 | 読み取りの後・表示の前。関数はI/Oを持たないため、通信の有無に結果が左右されない |
 | `status` の写像 | **Flutter 側（呼び出し画面）の責務**。本書は ERR-ID の予約と写像規則の提示にとどめる（§6） |
-| 2経路が並ぶ理由 | 集計は SQL、保存前プレビューは Dart。経路が2本あることが §4.5 の論点そのもの |
+| 経路が2本ある理由 | 読み取りが RPC と PostgREST に分かれるため。**算出は合流して Dart の1本になる**（§4.5 で確定） |
 
 ## 3. 入出力仕様
 
 本機能はエンドポイントを持たない。契約の実体は**関数シグネチャ**である。
 
-外部から観測される形は2つ。RPC 応答中の `target_g` フィールドと、SCR-05 のプレビュー値。
+外部から観測される形は2つ。SCR-01 のゲージが示す目標値と、SCR-05 のプレビュー値。
+どちらも RPC の戻り値ではない。Dart が `weight_kg` から算出した値である。
 
 ### 3.0 関数契約（本機能の実体）
 
@@ -234,7 +235,7 @@ round1(x) = (x * 10).round() / 10   -- 小数第1位・四捨五入
 
 | 対象 | 規則 | 根拠 |
 |---|---|---|
-| 内部値・RPC 戻り値の `target_g` | 小数第1位で四捨五入（Dart: `(v * 10).round() / 10`） | `float` の丸め残差がそのまま応答に出るのを防ぐ。切り上げ/切り捨ては目標を過大/過小に見せるため使わない |
+| 内部値・画面に渡す `target_g` | 小数第1位で四捨五入（Dart: `(v * 10).round() / 10`） | `float` の丸め残差がそのまま画面に出るのを防ぐ。切り上げ/切り捨ては目標を過大/過小に見せるため使わない |
 | SCR-01 ゲージ・SCR-05 の表示値 | **整数 g** に四捨五入（Dart: `v.round()`） | g 単位の小数第1位は読み取り上の意味が薄い。ゲージ・残量の可読性を優先 |
 | `rate_pct`（FEAT-05）・`remaining_g`（FEAT-09） | 本機能の責務外。ただし入力に使う `target_g` は丸め**後**の値とする | 丸め前後が混在すると FEAT-05 と FEAT-09 で表示値がずれる |
 
@@ -248,7 +249,7 @@ round1(x) = (x * 10).round() / 10   -- 小数第1位・四捨五入
 | 誤差の所在 | 誤差が入り得るのは `weight_kg` 自体の格納値と、`round1` の 10 倍/除算 |
 | 前提の脆さ | この性質は係数が 2.0 以外になった瞬間に失われる。**`round1` を省略してはならない** |
 | 丸め方向 | Dart の `double.round()` は「絶対値の大きいほうへ丸める（half away from zero）」 |
-| 丸め方向 | PostgreSQL の `round(numeric)` も同じ。負値は §4.3 で弾くため両者は一致する |
+| 丸めの置き場所 | **Dart だけが丸める。** SQL 側に丸め規則を置かないため、言語間の丸め差そのものが起きない |
 
 ### 4.3 境界値と戻り値
 
@@ -270,7 +271,7 @@ round1(x) = (x * 10).round() / 10   -- 小数第1位・四捨五入
 | `get_dashboard` | `protein_gauge` を階層ごと `null` にする。**正本は FEAT-05 §3** |
 | 画面 | ゲージの位置に「体重を登録すると目標が表示されます」＋ SCR-05 への導線 |
 | 他の表示 | ヒートマップ・トレーニング回数・記録機能は通常どおり動く |
-| `get_protein_remaining` | FEAT-09 が正本。同じ「200 で返す」方針に揃える `[仮]` |
+| `get_protein_remaining` | FEAT-09 が正本。`weight_kg` を `null` のまま 200 で返す（2026-08-08 確定） |
 
 **例外（`throw`）は使わない。**
 
@@ -283,37 +284,34 @@ round1(x) = (x * 10).round() / 10   -- 小数第1位・四捨五入
 
 ### 4.4 SQL 側の算出（RPC が使う形）
 
-集計 RPC は SQL の中で `target_g` を必要とする。案(a) を採る場合の関数を示す `[仮]`。
+**SQL 側では算出しない。** RULE-001 を SQL に書く形は採らない（2026-08-08 確定・§4.5）。
 
-```sql
--- RULE-001 の算出をDB側に一本化する（案(a)）。IMMUTABLE・引数のみに依存。
--- 係数 2.0 はこの関数だけが持つ（PostgreSQL に定数宣言が無いため、関数が定数の置き場を兼ねる）。
-CREATE FUNCTION calc_target_protein_g(p_weight_kg double precision)
-  RETURNS double precision
-  LANGUAGE sql
-  IMMUTABLE
-AS $$
-  SELECT CASE
-    WHEN p_weight_kg IS NULL THEN NULL
-    WHEN p_weight_kg <= 0 OR p_weight_kg = 'Infinity'::double precision THEN NULL
-    ELSE round((p_weight_kg * 2.0)::numeric, 1)::double precision
-  END;
-$$;
-```
-
-| 実装上の注意 | 内容 |
+| 事項 | 内容 |
 |---|---|
-| `round(x, 1)` の型 | PostgreSQL の2引数 `round` は `numeric` にしか無い。`double precision` のままでは小数桁を指定できないため `::numeric` へキャストする |
-| NULL の伝播 | `calc_target_protein_g(NULL)` は NULL を返す。未設定と不正値の**区別が戻り値だけでは付かない** |
+| SQL 関数 `calc_target_protein_g` | **作らない。** マイグレーションを1本も追加しない |
+| RPC が返す形 | `get_dashboard` は `weight_kg`・`intake_g`、`get_protein_remaining` は `weight_kg`・`intake_g`・候補行 |
+| RPC が返さない値 | `target_g`・`remaining_g`・`rate_pct`。いずれも計算済みの値のため |
+| 係数 2.0 の置き場所 | `nutrition.dart` の `PROTEIN_G_PER_KG` だけ。SQL には現れない |
+| 丸めの置き場所 | Dart の `roundProteinG` だけ。`round(x::numeric, 1)` を RPC に書かない |
 | 未設定の返し方 | `get_dashboard` は `protein_gauge` を null にして 200 を返す（確定・FEAT-05 §3） |
-| 不正値の扱い | 同じ形になるため RPC の戻り値では区別できない。ERR-PROFILE-021 は Dart 側（`calcTargetProteinG`）と DB の CHECK(>0) で防ぐ |
-| `NaN` の扱い | `NaN <= 0` は false、`NaN = 'Infinity'` も false のため上のCASEでは弾けない。`p_weight_kg = p_weight_kg` が false になる性質（`isnan`）で追加判定する `[仮]` |
+| 未設定・不正値の判定 | Dart 側（`calcTargetProteinG`）が行う。DB の CHECK(>0) は保険として残す |
+
+撤回した案の記録。SQL 関数を置くと次の面倒が付いてくる。いずれも今回は発生しない。
+
+| 撤回した論点 | 内容 |
+|---|---|
+| `round(x, 1)` の型 | PostgreSQL の2引数 `round` は `numeric` にしか無く `::numeric` のキャストが要った |
+| NULL の伝播 | SQL 関数は NULL を返すだけで、未設定と不正値を戻り値で区別できなかった |
+| `NaN` の扱い | `NaN <= 0` も `NaN = 'Infinity'` も false のため、CASE では弾けず追加判定が要った |
 
 ### 4.5 ★中心論点: Dart と SQL の二重実装
 
-**同じ式が2言語に現れる。** これは旧構成（TypeScript 1箇所）より悪化している。
+**採否は確定した（2026-08-08）。案(b) の Dart 一本化を採る。**
+RPC は素の値だけを返す。目標値・残量・達成率は Dart が計算する。
 
-| 経路 | 式が必要な理由 |
+論点そのものは次のとおりだった。同じ式が2言語に現れ、旧構成（TypeScript 1箇所）より悪化していた。
+
+| 経路 | 式が必要とされた理由 |
 |---|---|
 | SQL（RPC `get_dashboard` / `get_protein_remaining`） | 摂取量の集計と同じクエリ内で `target_g`・`rate_pct`・`remaining_g` を組み立てるため |
 | Dart（`nutrition.dart`） | SCR-05 で保存前に即時プレビューを出すため（往復を待たせない） |
@@ -323,36 +321,35 @@ $$;
 
 #### 対策3案
 
+比較表は判断の記録として残す。採否は「案」列に記す。
+
 | 案 | 内容 | 長所 | 短所 |
 |---|---|---|---|
-| **(a) 推奨 `[仮]`** | 算出を Postgres 関数 `calc_target_protein_g(weight_kg)` に一本化する。両RPCはこれを呼ぶ。Dart は表示のみ | 式は1箇所。RPC間の不一致が構造的に起きない。係数変更が1マイグレーションで済む | SCR-05 のプレビューが往復に依存する（§10 #9）。SQL は単体テストが書きにくい |
-| (b) | Dart 側に一本化し、RPC には `p_target_g` を引数で渡す | 式が Dart 1箇所。`dart test` で完全に検証できる | クライアントが目標値を宣言する形になり、DB側で検算できない。改竄・古い版のアプリが誤った目標値を送れる |
-| (c) | 両方に置き、単体テストで一致を担保する | どちらの経路も往復なしで完結する | 式が2つあるという事実は消えない。テストが緩むと即ずれる。**消極案** |
+| (a) 不採用 | 算出を Postgres 関数に一本化する。両RPCはこれを呼ぶ。Dart は表示のみ | 式は1箇所。RPC間の不一致が構造的に起きない | SCR-05 のプレビューが往復に依存する。SQL は単体テストが書きにくい |
+| **(b) 採用（確定）** | Dart 側に一本化する。**RPC は `weight_kg`・`intake_g` を素のまま返す** | 式が Dart 1箇所。`dart test` で完全に検証できる。プレビューが通信なしで出る | 目標値・残量が端末側の値になり、DB側で検算できない |
+| (c) 不採用 | 両方に置き、単体テストで一致を担保する | どちらの経路も往復なしで完結する | 式が2つあるという事実は消えない。テストが緩むと即ずれる。**消極案** |
 
-#### 推奨: 案(a) `[仮]`
+- 当初は案(a) を `[仮]` で推奨していた。**撤回する。**
+- 案(b) の短所は受容する。利用者は1人で、目標値を偽る動機が無い。
+
+#### 採用: 案(b) Dart 一本化（確定）
 
 | 層 | 責務 |
 |---|---|
-| `calc_target_protein_g`（SQL） | RULE-001 の式・係数・丸め。**正本** |
-| RPC `get_dashboard` / `get_protein_remaining` | 上記関数を呼ぶ。**式を書かない** |
-| `nutrition.dart` | 戻り値の型付け・状態判定（unset / invalid）・表示丸め。SCR-05 のプレビューは `supabase.rpc('calc_target_protein_g', {'p_weight_kg': ...})` を直接呼ぶ |
+| `nutrition.dart`（Dart） | RULE-001 の式・係数・丸め・状態判定（unset / invalid）。**正本** |
+| RPC `get_dashboard` / `get_protein_remaining` | 素の値を返すだけ。**式を書かない。丸めもしない** |
+| SCR-01 / SCR-05 のウィジェット | Dart の算出結果を表示する。表示丸めのみ担う（§4.2） |
 
-案(a) を採ったときの Dart 側の変化。
+得られるメリットは2つ。
 
-| 項目 | 内容 |
+| メリット | 内容 |
 |---|---|
-| `calcTargetProteinG` | **係数の乗算が消える**。内部を RPC 呼び出しの結果の型付けに差し替える |
-| §3.0 の契約 | そのまま残す |
-| `PROTEIN_G_PER_KG` | 表示文言（「体重 ◯kg × 2g」）用の定数として残す |
+| 式が1か所 | SQL と Dart の二重実装が消える。丸めの違いで画面ごとに数字がずれない |
+| 入力中のプレビュー | SCR-05 で体重を変えると**通信せずに**目標値が即座に出る |
 
-- 案が確定するまでは §3.0・§4.1 の Dart 契約を有効とする。
-- **式の置き場所が変わっても、関数シグネチャと戻り値の型は変えない。**
-
-> ⚠️ 要確認（人間判断）: 案(a)/(b)/(c) のどれを採るか未決。本書は (a) を `[仮]` で推奨する。
->
-> - (a) は `supabase/migrations/*.sql` に関数を1本追加する
-> - FEAT-05・FEAT-09 の RPC 定義がそれに依存する形になる
-> - **FEAT-05・FEAT-09 の詳細設計と同時に決める必要がある。**
+- §3.0・§4.1 の Dart 契約はそのまま有効である。関数シグネチャも戻り値の型も変えない。
+- `calcTargetProteinG` は係数の乗算を持ち続ける。RPC 呼び出しには置き換えない。
+- マイグレーションの追加は**無い**（§8）。
 
 ## 5. データアクセス
 
@@ -444,12 +441,13 @@ final row = await supabase
 | ERR-PROFILE-020 | 初期/空と同じ |
 | ERR-PROFILE-021 | ゲージ領域のみ非表示。他機能の操作は継続可 |
 
-- SCR-05 のプレビュー再計算タイミングは案の選択で変わる（§4.5）。
+- SCR-05 のプレビューは**案(b) 確定により通信を伴わない**（§4.5）。
 
-| 案 | プレビューの実装 | 体感 |
-|---|---|---|
-| (a) | `supabase.rpc('calc_target_protein_g')` を呼ぶ。入力確定時（`onEditingComplete` / デバウンス）に1回 | 往復ぶんの遅延が出る。オフラインでは出せない |
-| (b)(c) | `calcTargetProteinG` をローカルで呼ぶ。`onChanged` ごとに即時 | 遅延なし。ただし式が2箇所になる |
+| 項目 | 内容 |
+|---|---|
+| 実装 | `calcTargetProteinG` をローカルで呼ぶ。`onChanged` ごとに即時 |
+| 体感 | 遅延なし。オフラインでも出る。デバウンスも不要 |
+| 保存後の値 | 同じ関数が RPC の `weight_kg` にも適用されるため、保存前後で値が一致する |
 
 - SCR-01 の「目安」表記については §10 #4 を参照。
 
@@ -459,17 +457,22 @@ final row = await supabase
 |---|---|---|---|
 | 1 | `app/lib/domain/nutrition.dart` | **本機能の実体**。RULE-001 の純関数・係数定数・丸めヘルパ・戻り値型。**Supabase クライアントを import しない**（純粋ロジックのみ） | `const double PROTEIN_G_PER_KG = 2.0` ／ `ProteinTarget calcTargetProteinG(double? weightKg)` ／ `double roundProteinG(double value)` |
 | 2 | `app/test/domain/nutrition_test.dart` | NFR-QUAL-01 の単体テスト。§9 の TC を1対1で実装する。DBもモックも不要 | `group('calcTargetProteinG', () { test(...) })` |
-| 3 | `supabase/migrations/<timestamp>_calc_target_protein_g.sql` | 案(a) 採用時の**式の正本**。up/down 対で用意する（`../04_移行設計.md`） | `CREATE FUNCTION calc_target_protein_g(p_weight_kg double precision) RETURNS double precision` |
-| 4 | `supabase/migrations/<timestamp>_get_dashboard.sql` | FEAT-05 が正本。`protein_gauge.target_g` の算出で #3 を呼ぶ。**式を再実装しない** | `CREATE FUNCTION get_dashboard(p_period text) RETURNS json` `[仮]` |
-| 5 | `supabase/migrations/<timestamp>_get_protein_remaining.sql` | FEAT-09 が正本。`target_g` の算出で #3 を呼ぶ。RULE-002 の残量計算は FEAT-09 の責務 | `CREATE FUNCTION get_protein_remaining(p_target_date date) RETURNS json` `[仮]` |
-| 6 | `app/lib/data/profile_repository.dart` | FEAT-06 が正本。`users.weight_kg` の取得と `double?` への正規化 | `Future<double?> fetchWeightKg()` |
-| 7 | `app/lib/features/profile/profile_page.dart` | SCR-05。FEAT-06 が正本。プレビュー表示に #1 を使う | `class ProfilePage extends StatefulWidget` |
-| 8 | `app/lib/features/dashboard/dashboard_page.dart` | SCR-01。FEAT-05 が正本。RPC の戻り値を表示するだけ。**式を書かない** | `class DashboardPage extends StatefulWidget` |
+| 3 | `app/lib/data/profile_repository.dart` | FEAT-06 が正本。`users.weight_kg` の取得と `double?` への正規化 | `Future<double?> fetchWeightKg()` |
+| 4 | `app/lib/features/profile/profile_page.dart` | SCR-05。FEAT-06 が正本。プレビュー表示に #1 を使う | `class ProfilePage extends StatefulWidget` |
+| 5 | `app/lib/features/dashboard/dashboard_page.dart` | SCR-01。FEAT-05 が正本。#1 の算出結果を表示する。**式を書かない** | `class DashboardPage extends StatefulWidget` |
 
-- #4・#5・#7・#8 に「体重×2」に相当する式が**1つも現れないこと**が実装完了条件である（§9 TC-FEAT07-09）。
-- `roundProteinG` は FEAT-09 の `remaining_g` 丸めからも再利用してよい（丸め規則の一致を保証するため）。
+**本機能が新規に作るのは #1 と #2 だけである。**
+
+| 事項 | 内容 |
+|---|---|
+| マイグレーション | **追加しない。** `calc_target_protein_g` は作らない（§4.5） |
+| RPC 定義 | 本機能では触らない。`get_dashboard` は FEAT-05、`get_protein_remaining` は FEAT-09 が正本 |
+| RPC への要求 | 「体重×2」に相当する式を**書かないこと**。素の `weight_kg` を返すこと |
+
+- #3〜#5 と `supabase/migrations/**` に「体重×2」に相当する式が**1つも現れないこと**が実装完了条件である（§9 TC-FEAT07-09）。
+- `roundProteinG` は FEAT-09 の残量丸めからも再利用する（丸め規則の一致を保証するため）。
 - 旧構成では同じロジックを1ファイルの TypeScript に置いていた。
-- 今回それを `app/lib/domain/nutrition.dart` へ移す。算出の正本は案(a)により SQL 側へ移る。
+- 今回それを `app/lib/domain/nutrition.dart` へ移す。**算出の正本は Dart 側1箇所のままである。**
 
 ## 9. テスト観点
 
@@ -487,21 +490,21 @@ DB・モック・ウィジェットは不要。
 | TC-FEAT07-06 | `weightKg` が負値 | `ProteinTargetInvalid` |
 | TC-FEAT07-07 | `weightKg` が `double.nan` / `double.infinity` | `ProteinTargetInvalid`（CHECK(>0) を通過し得るため必須） |
 | TC-FEAT07-08 | 純粋性 | 同一入力を複数回呼んでも戻り値が等しく、外部状態を変更しない |
-| TC-FEAT07-09 | DRY（静的検査） | `app/lib/**`（`nutrition.dart` を除く）と `supabase/migrations/**`（`calc_target_protein_g` の定義を除く）に、係数リテラル `2.0` を用いた `weight` 由来の乗算が存在しない |
-| TC-FEAT07-10 | 機能間の一致 | 同一ユーザー・同一時点で `get_dashboard` と `get_protein_remaining` の `target_g` が完全一致する |
+| TC-FEAT07-09 | DRY（静的検査） | `app/lib/**`（`nutrition.dart` を除く）と `supabase/migrations/**` に、係数リテラル `2.0` を用いた `weight` 由来の乗算が存在しない |
+| TC-FEAT07-10 | 機能間の一致 | 同一ユーザー・同一時点で `get_dashboard` と `get_protein_remaining` の `weight_kg` が一致し、そこから Dart が出す `target_g` も一致する |
 | TC-FEAT07-11 | 表示丸め | SCR-01 のゲージ表示が整数 g、SCR-05 のプレビューも整数 g で、内部値の小数第1位が画面に露出しない |
 | TC-FEAT07-12 | 単位の取り違え | `weightKg` に g 相当の値（体重の1000倍）を渡した場合も関数は算出する（＝関数では検出できない）ことを明示的に確認し、§10 #3 の指摘を裏付ける |
-| TC-FEAT07-13 | **Dart と SQL の一致** | 体重のゴールデン値表で `calcTargetProteinG` と `calc_target_protein_g` の結果が一致する |
-| TC-FEAT07-14 | 丸めの半端値 | `.05` 刻みの値（例 `x.x5` になるケース）で Dart と SQL の丸め方向が一致する（half away from zero） |
+| TC-FEAT07-13 | **SQL に式が無いこと**（静的検査） | `supabase/migrations/**` に `calc_target_protein_g` の定義が無く、RPC の本体にも RULE-001 の式・丸めが現れない |
+| TC-FEAT07-14 | 丸めの半端値 | `.05` 刻みの値（例 `x.x5` になるケース）で `roundProteinG` が half away from zero に丸める |
 
-- TC-FEAT07-13 のゴールデン値表は `null` / 0 / 負 / NaN / Infinity / 極小 / 小数 / 通常 の8種。
-- TC-FEAT07-13 は案(c) では必須。案(a)(b) でも回帰検知として残す。
+- ゴールデン値表は `null` / 0 / 負 / NaN / Infinity / 極小 / 小数 / 通常 の8種。TC-FEAT07-01〜07 に割り当てる。
+- TC-FEAT07-13 は案(b) 確定（§4.5）の回帰検知である。SQL 側へ式が戻っていないかを見る。
 
 受入基準（G/W/T）の候補:
 - [AC] Given `users.weight_kg` が登録済み When SCR-01 を開く Then ゲージの目標値が「体重×2g」を小数第1位で丸め、整数 g として表示される
 - [AC] Given `users.weight_kg` が NULL When SCR-01 を開く Then ゲージは目標未設定として表示され、SCR-05 への導線が示され、ヒートマップと記録機能は操作できる
 - [AC] Given `users.weight_kg` が登録済み When SCR-05 で体重を変更する（保存前） Then 必要量プレビューが再計算され、保存後に RPC が返す値と一致する
-- [AC] Given 同一ユーザー・同一時点 When `get_dashboard` と `get_protein_remaining` を呼ぶ Then 両者の `target_g` が一致する
+- [AC] Given 同一ユーザー・同一時点 When `get_dashboard` と `get_protein_remaining` を呼ぶ Then Dart が両者から算出する目標値が一致する
 
 > 受入基準・ST・ERR の**正本は段6**（`../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`・本PR対象外）。本節はその母集合への入力。
 
@@ -513,21 +516,22 @@ DB・モック・ウィジェットは不要。
 | 2 | ~~過去日の目標値~~（**解決**） | **受容で確定**（ADR-0009）。`users.weight_kg` は現在値のみを保持し、過去日のダッシュボードも現在の体重で計算する。日次スナップショットも体重履歴テーブルも持たない。**残る表示上の課題は FEAT-05 §10-13** が担当する | — |
 | 3 | 単位の一貫性 | `weight_kg` は kg、`protein_g` 系と `target_g` は g。どちらも `float`（Dart は `double`）のため取り違えても型検査は通り、関数側でも検出できない（TC-FEAT07-12） | 🟡 中 |
 | 4 | 「目安」表記の要否 | 医療・栄養指導としての正確性は適用外（NFR-OOS-01）。だが「1日の必要量」と断定表示すると医学的根拠のある値と誤認され得る。注記の要否は UI 文言の判断で本設計では確定しない | 🟡 中 |
-| 5 | **Dart と SQL の二重実装（DRY違反・新構成で悪化）** | 集計は RPC（SQL）、SCR-05 のプレビューは Dart に残り**同じ式が2言語に分かれる**。言語が違うため型検査もコンパイラもずれを検出できない。**これを解く設計が本書の中心**（§4.5） | 🔴 高 |
+| 5 | ~~**Dart と SQL の二重実装（DRY違反・新構成で悪化）**~~（**解決**） | **Dart 一本化で確定**（2026-08-08・案(b)・§4.5）。RPC は素の値だけを返し、目標値・残量・達成率は Dart が計算する。SQL 関数 `calc_target_protein_g` は作らない。式が1か所になり、丸めの違いで画面ごとに数字がずれない。SCR-05 のプレビューも通信なしで出る | — |
 | 6 | ~~未設定時の戻り値表現~~（**解決**） | **体重未設定なら `protein_gauge` を `null` にして 200 を返す**（2026-08-08）。エラーにしない。正本は FEAT-05 §3。画面はゲージの位置に体重登録の案内を出す。ヒートマップと記録機能は動くため NFR-AVAIL-05 とも衝突しない。段3 §4.3・§4.4 の契約改訂が要る | — |
 | 7 | 体重の入力精度 | 本機能の丸めは `weight_kg` が妥当な精度で格納されている前提に立つ。入力桁数制限（小数第1位までか等）は FEAT-06 の責務であり、未規定だと丸め結果が不安定になる | 🟢 低 |
 | 8 | `nutrition.dart` の純粋性維持 | Supabase クライアント・環境変数・`dart:io` を import すると単体テストが実行環境に依存し、TDD の起点という位置づけが崩れる。TestFlight 配布物に秘密値を置くと復元可能（NFR-SEC-02） | 🟡 中 |
-| 9 | 案(a) のプレビュー往復依存 | SCR-05 のプレビューが `calc_target_protein_g` の往復に依存し、通信が増えオフラインでは出せない。緩和は (i) デバウンス、(ii) Dart のローカル計算を許す（実質 案(c)） | 🟡 中 |
+| 9 | ~~案(a) のプレビュー往復依存~~（**解決**） | **案(b) 確定により消滅した**（2026-08-08）。プレビューは `calcTargetProteinG` のローカル呼び出しで出る。通信は増えず、オフラインでも表示できる。デバウンスも不要（§7） | — |
 
 - 論点1: 式中にリテラルを散らすと影響範囲が全機能に広がる。**定数化は変更時の探索範囲を有限にするために必須**（§4.1）。
 - 論点2: 日次スナップショット（体重履歴テーブル、または集計時点の目標値の保存）は**持たない**と確定した（ADR-0009）。
 - 論点3: 緩和策(a) は変換地点を `calcTargetProteinG` 1箇所に限定する【本書の設計】。
 - 論点3: 緩和策(b) は `extension type Kg(double v)` で単位を型にする。NFR-MAINT-01 に見合うかは人間判断。
-- 論点5: 対策3案は §4.5。TC-FEAT07-09（係数リテラルの静的検査）と TC-FEAT07-10（RPC間の値一致）はどの案でも必ず実装する。
+- 論点5: 対策3案と採否は §4.5。
+- 論点5: 回帰は TC-FEAT07-09・TC-FEAT07-10・TC-FEAT07-13 の3本で防ぐ。
 - 論点6: 確定は「`protein_gauge` を null にして 200 を返す」（FEAT-05 §3 が正本・§4.3）。段3の契約改訂が要る。
 - 論点6: 未設定と不正値は戻り値で区別できなくなる。ERR-PROFILE-021 は Dart 側と CHECK(>0) で防ぐ。
 - 論点8: **`app/lib/domain/` にはI/Oを持ち込まない**。Supabase アクセスは `app/lib/data/*_repository.dart` に限定する（§8）。
-- 論点9: **案(a) を採る際に併せて決める必要がある**（§7）。
+- 論点9: 案(b) 確定により、プレビューは常にローカル算出になった（§7）。
 
 ### 10.5 要確認（人間判断）
 
@@ -549,12 +553,12 @@ DB・モック・ウィジェットは不要。
 > - FEAT-07 は HTTP ステータスによるエラー写像（409/500）を持たなくなる
 > - 段3の契約表とエラー節の改訂が要る
 
-> ⚠️ 要確認（人間判断）: #5 算出式の置き場所。次のどれを採るか。
+> ~~⚠️ 要確認（人間判断）: #5 算出式の置き場所。次のどれを採るか。~~（**解決**・2026-08-08）
 >
-> - 案(a) SQL 一本化【推奨・`[仮]`】
-> - 案(b) Dart 一本化
-> - 案(c) 両方＋一致テスト
-> - FEAT-05・FEAT-09 の RPC 定義に直結するため、3機能まとめて決める
+> - ~~案(a) SQL 一本化【推奨・`[仮]`】~~
+> - **案(b) Dart 一本化で確定。** RPC は素の値だけを返す
+> - ~~案(c) 両方＋一致テスト~~
+> - FEAT-05・FEAT-09 の RPC 定義も同時に確定した。SQL 関数 `calc_target_protein_g` は作らない
 
 > #2 の決着（2026-08-08・ADR-0009）: 「過去分も現在の体重で再計算される」仕様を**受容**する。
 >

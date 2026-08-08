@@ -73,7 +73,7 @@ Supabase
 | 04 トレーニング記録 | **RPC**＋PostgREST | `create_training_session` |
 | 05 ダッシュボード | **RPC** | `get_dashboard` |
 | 06 初期設定 | PostgREST | `users` |
-| 07 必要量算出 | Dart 純関数＋SQL関数 | `calc_target_protein_g` |
+| 07 必要量算出 | **Dart 純関数のみ**（APIなし） | `calcTargetProteinG` |
 | 08 食事撮影 | **Edge Function**＋PostgREST | `analyze-meal` |
 | 09 残量・不足分 | **RPC** | `get_protein_remaining` |
 | 10 CSV取込 | **RPC** | `import_foods` |

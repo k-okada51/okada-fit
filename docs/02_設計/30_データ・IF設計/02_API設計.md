@@ -24,7 +24,7 @@ status: draft
 | 方式 | Flutter からの呼び方 | 実体（HTTP） | 使う機能 |
 |---|---|---|---|
 | PostgREST | `supabase.from('<table>').select()` 等 | `{SUPABASE_URL}/rest/v1/<table>` | FEAT-01 / 02 / 04 / 06 / 08 |
-| RPC | `supabase.rpc('<function>', params: {...})` | `{SUPABASE_URL}/rest/v1/rpc/<function>` | FEAT-01 / 04 / 05 / 07 / 09 / 10 |
+| RPC | `supabase.rpc('<function>', params: {...})` | `{SUPABASE_URL}/rest/v1/rpc/<function>` | FEAT-01 / 04 / 05 / 09 / 10 |
 | Edge Function | `supabase.functions.invoke('<name>')` | `POST {SUPABASE_URL}/functions/v1/<name>` | FEAT-03 / 08 |
 
 - パスの形は Supabase が決める。設計側で決められるのは**表名・関数名・Edge Function 名だけ**。
@@ -75,10 +75,10 @@ status: draft
 | トレーニング記録 | RPC `create_training_session` ＋ PostgREST `training_session_details` | FEAT-04 | 内部 | MUST | [暫定] |
 | ダッシュボード集計 | RPC `get_dashboard` | FEAT-05 | 内部 | MUST | [暫定] |
 | プロフィール（体重・目標） | PostgREST `users`（select/update） | FEAT-06 | 内部 | MUST | [暫定] |
-| 必要タンパク質量の算出 | Dart 純関数＋SQL関数 `calc_target_protein_g` | FEAT-07 | 内部 | MUST | [暫定] |
+| 必要タンパク質量の算出 | **APIなし**。Dart 純関数 `calcTargetProteinG`（`app/lib/domain/nutrition.dart`） | FEAT-07 | 内部 | MUST | [暫定] |
 | 食事撮影→栄養価 | Edge Function `analyze-meal` | FEAT-08 | EXT-01 | MUST | [暫定] |
 | 食事記録の保存 | PostgREST `meal_logs`（insert） | FEAT-08 | 内部 | MUST | [暫定] |
-| タンパク質残量・不足分 | RPC `get_protein_remaining` | FEAT-09 | 内部 | MUST | [暫定] |
+| タンパク質残量・不足分 | RPC `get_protein_remaining`（素の値を返す。残量算出は Dart） | FEAT-09 | 内部 | MUST | [暫定] |
 | 食事マスタCSVインポート | RPC `import_foods` | FEAT-10 | 内部 | MUST | [暫定] |
 
 ## 3. エンドポイント一覧
@@ -101,15 +101,25 @@ status: draft
 | PostgREST | `from('training_session_details').update({is_done:true})` | 内部 | 要 | 実行済トグル（T02）。状態ガード `.eq('is_done', false)` 付き `[仮]` |
 | RPC | `rpc('get_dashboard', {p_period, p_today, p_range_start, p_range_end, p_month_start, p_month_end})` | 内部 | 要 | ゲージ＋今月の回数＋ヒートマップの集計（FEAT-05・§4.3） |
 | PostgREST | `from('users').select(...).single()` ／ `.update(patch)` | 内部 | 要 | 体重・氏名・目標回数（FEAT-06） |
-| SQL関数 | `rpc('calc_target_protein_g', {p_weight_kg})` | 内部 | 要 | 必要量の算出（RULE-001）。同じ式の Dart 純関数が正本（FEAT-07） |
 | Edge Function | `functions.invoke('analyze-meal')` | EXT-01 | 要 | 食事画像→Gemini API→栄養4項目（保存はしない・§4.1） |
 | PostgREST | `from('meal_logs').insert(...)` | 内部 | 要 | 食事記録の保存（栄養4項目＋日時・画像は非保存）。**摂取数は送らない**（ADR-0013） |
-| RPC | `rpc('get_protein_remaining', {p_target_date, p_limit})` | 内部 | 要 | 当日残量＝目標−摂取、不足を補う食品候補（FEAT-09・§4.4） |
+| RPC | `rpc('get_protein_remaining', {p_target_date})` | 内部 | 要 | 体重・当日摂取量・食品候補行を返す。残量と候補の選定は Dart（FEAT-09・§4.4） |
 | RPC | `rpc('import_foods', {p_rows})` | 内部 | 要 | 食事マスタCSV取込（FEAT-10）。`ON CONFLICT (name) DO NOTHING` |
 
-- RPC・SQL関数の定義は `supabase/migrations/*.sql` で版管理する（`../50_詳細設計/04_移行設計.md §3`）。
+- RPC の定義は `supabase/migrations/*.sql` で版管理する（`../50_詳細設計/04_移行設計.md §3`）。
 - 関数はいずれも `SECURITY INVOKER`。RLS を迂回しない。
 - 引数に `user_id` を取らない。本人の解決は `auth.uid()` が行う（ADR-0005）。
+
+**算出用の SQL 関数は持たない**（2026-08-08 確定・E群D）。
+
+| 事項 | 内容 |
+|---|---|
+| RPC が返すもの | 素の値だけ。`weight_kg`・`intake_g`・候補行など |
+| RPC が返さないもの | `target_g`・`remaining_g`・`rate_pct` などの計算済みの値 |
+| 算出の場所 | Dart の純関数（`app/lib/domain/nutrition.dart` ほか）。正本は FEAT-07 §4.5 |
+| 作らない関数 | `calc_target_protein_g`。SQL に RULE-001 を複製しないため |
+| 理由（1） | 式が1か所になる。丸めの違いで画面ごとに数字がずれない |
+| 理由（2） | SCR-05 で体重を変えると**通信せずに**目標値が即座に出る |
 
 器具↔種目は**多対多**（中間テーブル `machine_menus`・正本＝`01_データモデル.md`）。契約への影響は次の2点。
 
@@ -282,13 +292,16 @@ status: draft
 }
 ```
 
-画面が使う `target_g`・`rate_pct` は **Flutter 側で算出する**。SQL に RULE-001 を複製しないため。
+画面が使う `target_g`・`rate_pct` は **Dart が算出する**（2026-08-08 確定）。SQL に RULE-001 を複製しないため。
 
 | 項目 | 算出 |
 |---|---|
 | `target_g` | `weight_kg` を FEAT-07 の Dart 純関数へ渡す（RULE-001＝体重×2g） |
 | `rate_pct` | `calcGaugeRatePct`。達成率100%で頭打ち（ADR-0002） |
 | `protein_gauge` が null | 両方とも算出しない。ゲージの位置に体重登録の導線を出す |
+
+- **本 RPC の契約は変更なし。** `protein_gauge` は元から素の値（`weight_kg`・`intake_g`）だけを返す。
+- 目標値・達成率は戻り値に含まれない。含めない方針を確定として明記する。
 
 ゲージは日単位で完結する。週・月の平均や累積は取らない。
 
@@ -323,10 +336,12 @@ status: draft
 
 旧 `GET /api/protein/remaining` は廃止。RPC `get_protein_remaining` に置き換わる。
 
+**戻り値を素の値に差し替えた**（2026-08-08 確定・E群D）。残量と候補の選定は Dart が行う。
+
 | 項目 | 内容 |
 |---|---|
 | 呼び出し | `supabase.rpc('get_protein_remaining', params: { ... })` |
-| シグネチャ | `public.get_protein_remaining(p_target_date date, p_limit int default 3)` |
+| シグネチャ | `public.get_protein_remaining(p_target_date date)` |
 | 実行権限 | `SECURITY INVOKER`・`STABLE`。`GRANT EXECUTE TO authenticated` |
 | 認証 | 要。`auth.uid()` が解決できなければ 401 |
 | 冪等性 | 冪等（参照系）。リトライ安全 |
@@ -335,26 +350,35 @@ status: draft
 | 引数 | 型 | 必須 | 既定 | 内容 |
 |---|---|---|---|---|
 | `p_target_date` | `date` | 必須 | — | 集計対象日。当日を Flutter が端末TZで決めて渡す（ADR-0014） |
-| `p_limit` | `int` | 任意 | `3` | 提示件数 `[仮]`。既定値は関数定義側に持たせる |
+
+- 旧契約の `p_limit` は**削除した**。提示件数 N（既定3）は Dart 側の定数になった。
 
 ```jsonc
 // 戻り値（jsonb・型のみ）
 {
-  "target_g":    "float(>=0)",   // 必要量。RULE-001（係数と丸めの正本＝FEAT-07）
-  "intake_g":    "float(>=0)",   // 当日の meal_logs.protein_g 合計
-  "remaining_g": "float(>=0)",   // RULE-002。0でクランプ（負値を返さない）
-  "suggestions": [               // RULE-005。foods からの決定的抽出（AI不使用）
-    { "food_name": "string", "protein_amount": "float(>0)" }  // 1食分あたり（ADR-0012）
+  "weight_kg": "float(>0) | null",   // users.weight_kg をそのまま返す。未設定は null
+  "intake_g":  "float(>=0)",         // 当日の meal_logs.protein_g 合計。記録なしは 0
+  "foods_candidates": [              // RULE-005 の母集合。並べ替えず id 昇順で返す
+    { "id": "bigint", "food_name": "string", "protein_amount": "float(>=0)" }  // 1食分あたり（ADR-0012）
   ]
 }
 ```
 
-- `protein_amount` は**1食分あたり**（ADR-0012）。`remaining_g` とそのまま比較できる。
+計算済みの値を返さない。Dart が算出する値は次の3つである。
+
+| 値 | 算出 |
+|---|---|
+| 目標値 `target_g` | `weight_kg` を FEAT-07 の Dart 純関数へ渡す（RULE-001） |
+| 残量 `remaining_g` | `max(0, target_g − intake_g)`（RULE-002）。0でクランプ |
+| 候補 `suggestions` | `foods_candidates` から差の絶対値昇順で N件（既定3）を選ぶ（RULE-005） |
+
+- `protein_amount` は**1食分あたり**（ADR-0012）。残量とそのまま比較できる。
 - `intake_g` は `protein_g` の単純合計。係数は掛けない（ADR-0013）。
-- `suggestions` は順序が保証された配列。件数は 0〜`p_limit`。
-- `foods` の候補が0件でもエラーにせず `suggestions: []` を返す。
+- `foods_candidates` に `id` を含める。同値時の順序を `id` 昇順で決めるため。
+- `foods` が0件でもエラーにせず `foods_candidates: []` を返す。
 - DB列名 `foods.name` は `food_name` に写像する。旧契約の項目名を維持するため。
-- 体重が未設定・不正のときは値を返さず、機能別 ERR で返す（§5.4）。
+- 体重が未設定・不正でも **200 を返す**。`weight_kg` を `null` のまま載せ、判定は Dart が行う。
+- 本 RPC は `RAISE EXCEPTION` を使わない。ERR-PROFILE-020 / 021 は Dart 側で起こす（FEAT-09 §6）。
 
 ## 5. 共通エラー応答契約
 > 📝 ここに全API共通のエラー応答契約を記載。{形（error_code/message/retryable）／HTTPステータス方針／ERRの完全列挙の正本の所在}
@@ -447,7 +471,7 @@ Edge Function 側の実行上限（2026-08-08 確認済み）。打ち切りは�
 - 機能別の接頭辞は FEAT-01=`ERR-MACHINE-*` / FEAT-04=`ERR-TRAINING-*` / FEAT-06=`ERR-PROFILE-*`。
 - 同じく FEAT-08=`ERR-MEAL-*` / FEAT-09=`ERR-PROTEIN-*` / FEAT-10=`ERR-FOOD-*`。
 - SQLSTATE を利用者へ出さない。`23505` の詳細も画面に出さない。
-- SQLSTATE `PTxxx` を HTTP ステータス xxx へ写す PostgREST の挙動は `[仮]`（FEAT-09）。
+- SQLSTATE `PTxxx` を HTTP ステータス xxx へ写す PostgREST の挙動は `[仮]`（FEAT-05）。
 - PostgREST・RPC 経路には相関IDが付かない（§1）。障害調査の手掛かりが Edge Function 経路より少ない。
 
 - ERRの完全列挙（分岐網羅の母集合）は `60_テスト設計/02_RED母集合_受入基準・状態・エラー.md` を正本とし、各ERRにハンドラ＋テストを1対1で紐づける。

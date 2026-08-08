@@ -47,7 +47,7 @@ status: draft
 | ① | Flutter | `image_picker`（`ImageSource.camera`）で撮影する |
 | ② | Flutter | 端末側で長辺1024pxへ縮小する（ADR-0003・必須） |
 | ③ | Flutter → Edge Function | 画像を base64 化し、`analyze-meal` へ直接POSTする |
-| ④ | Edge Function | JWT検証 → 入力検証（MIME・バイト長）→ レート制限 |
+| ④ | Edge Function | JWT検証 → 入力検証（MIME・バイト長） |
 | ⑤ | Edge Function → Gemini | 受領した base64 を `inlineData` に載せて `generateContent` を呼ぶ |
 | ⑥ | Edge Function | `responseSchema` の構造化出力を zod で検証する |
 | ⑦ | Edge Function → Flutter | 栄養4項目＋料理名を返す。画像はメモリ上のみで、どこにも永続化しない |
@@ -103,6 +103,18 @@ base64 化で約1.33倍になる。**最大でも約400KB。**
 | `food_name` / `dish_names` の保存 | ⑧のリクエストにも `meal_logs` にも存在しない |
 | 栄養4項目 | `meal_logs` に保存する。保存後は FEAT-09（残量再計算）へ連携する |
 
+#### 担保できる範囲（2026-08-08 確定）
+
+**自システム内は設計で固める。** 担保は3点。
+
+| 担保 | 内容 |
+|---|---|
+| DB | 画像・料理名の列を持たない（`../../30_データ・IF設計/01_データモデル.md` §7） |
+| 保管 | 中継用のオブジェクト保管を使わない（ADR-0003） |
+| ログ | 画像・base64 をログに出さない（§6 監査ログ） |
+
+**Google 側の保持・学習利用は未確認のまま残る。** 実装着手前に調べる（§10-5）。
+
 ### ADR・段3との関係
 
 > ~~⚠️ 要確認（人間判断）: 本書は Flutter + Supabase 構成（Vercel 不使用）で記述している。~~（**解決**・2026-08-08）
@@ -142,7 +154,6 @@ sequenceDiagram
   F->>EF: ③-2 functions.invoke（body＝image_base64 + mime_type）
   EF->>EF: ④-1 認証（Supabase Auth JWT）→ 失敗 ERR-AUTH-001
   EF->>EF: ④-2 MIME・バイト長の再検証 → ERR-MEAL-001/002/003
-  EF->>EF: ④-3 レート制限（NFR-SEC-05）→ 超過 ERR-MEAL-008
   Note over EF,D: Edge Function は業務テーブルに一切触れない（DB非接触）
   EF->>EF: 監査ログ（外部送信の事実・NFR-SEC-AUDIT-01）
   EF->>G: ⑤ generateContent（inlineData＝受領した base64・responseSchema・timeout）
@@ -362,14 +373,24 @@ const res = await fetch(
 | 保存の栄養4項目 | 4項目すべて必須・数値・0以上（DB CHECK と同値） | Flutter・DB CHECK | ERR-MEAL-006 (400) |
 | `eaten_date` | 端末TZで決めた ISO 8601 の日付。未来日・1年以上前は不可 `[仮]` | Flutter | ERR-MEAL-007 (400) |
 | `eaten_time` | 端末時刻の ISO 8601 の時刻または null | Flutter | ERR-MEAL-007 (400) |
-| レート制限 | `user_id` 単位で 20回/時・100回/日 `[仮]`（NFR-SEC-05） | Edge Function | ERR-MEAL-008 (429) |
 
 - 画像バイト長の上限は、長辺1024px・JPEG 品質0.8 `[仮]` のリサイズ後は通常大きく下回る。
-- レート制限を置くのは従量課金と悪用を抑えるため。
 - バイト長は base64 文字列長から算出する（`len/4*3 −パディング数`）。全体をデコードしない。
 - マジックバイト判定は先頭数バイトだけをデコードして行う。
 - 端末側の検証は UX のためのもの。信頼境界の外にあるため、これだけに依存しない。
 - 関数側の再検証は省略しない。
+
+**アプリ側のレート制限は実装しない**（ADR-0016・2026-08-08 確定）。カウンタテーブルも閾値も持たない。
+コスト防御は2層に委ねる。
+
+| 層 | 何が守るか |
+|---|---|
+| UI | 送信中は［解析する］を無効化する（二重送信の防止・§7） |
+| Gemini API | 日次クォータ。超過は `ERR-AI-QUOTA`（429・retryable=false） |
+
+- 根拠は利用者1人・1日3〜5回・想定コスト月$1前後・個人保守（ADR-0016）。
+- `ERR-AI-QUOTA` の定義は `../../30_データ・IF設計/02_API設計.md` §5 が正本。
+- 残る指摘は §10 #16（NFR-SEC-05 を掲げながら実装しない）。
 
 ## 4. 業務ロジック
 
@@ -493,7 +514,7 @@ RETURNING id, eaten_date;
 | ERR-MEAL-005 | 422 | AI出力が妥当域外（負値・上限超・NaN） | 同上 | false | error＋出力値 |
 | ERR-MEAL-006 | 400 | 保存時の栄養4項目が欠落・非数値・負値 | 撮り直しを促す（利用者は値を直せない） | false | warn |
 | ERR-MEAL-007 | 400 | `eaten_date`/`eaten_time` の形式不正・未来日 | 端末の日時設定を確認するよう促す | false | warn |
-| ERR-MEAL-008 | 429 | アプリ側レート制限超過（NFR-SEC-05） | 時間をおいて再試行するよう促す | true（時間経過後） | warn＋`user_id`・カウンタ |
+| ERR-MEAL-008 | — | **欠番。** アプリ側レート制限を実装しないため未使用（ADR-0016・§3.4・§10 #11） | — | — | — |
 | ERR-MEAL-009 | 500 | `meal_logs` INSERT 失敗（CHECK違反・RLS拒否・接続断） | 「記録に失敗しました」＋再試行導線 | true | error＋SQLSTATE（値はマスキング） |
 | ERR-AI-CREDIT | 402 | Gemini API のクレジット・クォータ不足 | AI機能の一時停止を伝える | false | error（運用者向けアラート対象） |
 | ERR-AI-RATE | 429 | Gemini API のレート制限 | 少し待って再試行するよう促す | true（指数バックオフ） | warn |
@@ -501,6 +522,7 @@ RETURNING id, eaten_date;
 | ERR-AI-FAIL | 500 | 上記以外の EXT-01 失敗（不達・5xx を含む） | 解析失敗を伝え、撮り直しを案内 | false | error（NFR-AVAIL-05 の縮退判定材料） |
 
 - ERR-MEAL-003 は通常、端末側リサイズにより到達しない。
+- 欠番の ERR-MEAL-008 は**採番を変えずに残す。** ERR-MEAL-009 を繰り上げない。
 
 ### 通信断の扱い
 
@@ -579,7 +601,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 
 | # | ファイル | 役割 | 主なシグネチャ |
 |---|---|---|---|
-| 1 | `supabase/functions/analyze-meal/index.ts` | Edge Function 本体。認証→入力検証→レート制限→EXT-01→出力検証→返却 | `Deno.serve(handler)` |
+| 1 | `supabase/functions/analyze-meal/index.ts` | Edge Function 本体。認証→入力検証→EXT-01→出力検証→返却 | `Deno.serve(handler)` |
 | 1 | 同上 | DB非接触・永続化なし | `async function handler(req: Request): Promise<Response>` |
 | 2 | `supabase/functions/analyze-meal/_schema.ts` | `responseSchema`（Gemini 用）と zod スキーマ・型（§3.2） | `export const MEAL_NUTRITION_RESPONSE_SCHEMA` |
 | 2 | 同上 | 同上 | `export const mealNutritionSchema` / `export type MealNutrition` |
@@ -587,15 +609,16 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 4 | `supabase/functions/analyze-meal/_validation.ts` | 純関数群。画像入力・AI出力の妥当域・Atwater（§4） | `export function assertImageInput(b64: string, mimeType: string): void` |
 | 4 | 同上 | 同上 | `export function validateNutrition(o: unknown): MealNutrition` |
 | 4 | 同上 | 同上 | `export function atwaterDeviation(o: MealNutrition): number` |
-| 5 | `supabase/functions/_shared/rate_limit.ts` | `user_id` 単位のレート制限（NFR-SEC-05）。FEAT-03 と共用 | `export function consume(userId: string, key: string): Promise<boolean>` |
-| 6 | `app/lib/features/meals/meal_capture_page.dart` | SCR-04。撮影→プレビュー→解析→確認→記録の画面（§7） | `class MealCapturePage extends StatefulWidget` |
-| 7 | `app/lib/features/meals/meal_analyze_controller.dart` | 画面状態の管理。送信→invoke→結果保持→保存の進行制御 | `Future<void> analyze()` / `Future<void> save()` |
-| 8 | `app/lib/features/meals/meal_nutrition.dart` | 応答のモデルクラス（zod ではなく Dart 側の型） | `class MealNutrition { factory MealNutrition.fromJson(Map<String, dynamic> j); }` |
-| 9 | `app/lib/data/meal_analyze_repository.dart` | `analyze-meal` の invoke（§3.1） | `Future<MealNutrition> analyze(Uint8List bytes, String mimeType)` |
-| 10 | `app/lib/data/meal_log_repository.dart` | `meal_logs` への INSERT（§3.3・§5） | `Future<MealLogCreated> insert(MealLogRow row)` |
-| 11 | `app/lib/domain/image_resize.dart` | 端末側リサイズ（ADR-0003・§4） | `Uint8List resizeToMaxEdge(Uint8List bytes, int maxEdge)` |
-| 12 | `app/lib/domain/meal_validation.dart` | 入力・保存値の検証・Atwater（Dart 側の純関数・単体テスト対象） | `void assertImageInput(String b64, String mimeType)` |
-| 12 | 同上 | 同上 | `double atwaterDeviation(MealNutrition o)` |
+| 5 | `app/lib/features/meals/meal_capture_page.dart` | SCR-04。撮影→プレビュー→解析→確認→記録の画面（§7） | `class MealCapturePage extends StatefulWidget` |
+| 6 | `app/lib/features/meals/meal_analyze_controller.dart` | 画面状態の管理。送信→invoke→結果保持→保存の進行制御 | `Future<void> analyze()` / `Future<void> save()` |
+| 7 | `app/lib/features/meals/meal_nutrition.dart` | 応答のモデルクラス（zod ではなく Dart 側の型） | `class MealNutrition { factory MealNutrition.fromJson(Map<String, dynamic> j); }` |
+| 8 | `app/lib/data/meal_analyze_repository.dart` | `analyze-meal` の invoke（§3.1） | `Future<MealNutrition> analyze(Uint8List bytes, String mimeType)` |
+| 9 | `app/lib/data/meal_log_repository.dart` | `meal_logs` への INSERT（§3.3・§5） | `Future<MealLogCreated> insert(MealLogRow row)` |
+| 10 | `app/lib/domain/image_resize.dart` | 端末側リサイズ（ADR-0003・§4） | `Uint8List resizeToMaxEdge(Uint8List bytes, int maxEdge)` |
+| 11 | `app/lib/domain/meal_validation.dart` | 入力・保存値の検証・Atwater（Dart 側の純関数・単体テスト対象） | `void assertImageInput(String b64, String mimeType)` |
+| 11 | 同上 | 同上 | `double atwaterDeviation(MealNutrition o)` |
+
+- **レート制限のモジュールは作らない**（旧 `_shared/rate_limit.ts`）。実装しない方針で確定（ADR-0016・§3.4）。
 
 ## 9. テスト観点
 
@@ -614,7 +637,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | TC-FEAT08-11 | 保存の正常系 | 栄養4項目＋日時で1行 INSERT、画像・料理名の列が存在しない |
 | TC-FEAT08-12 | 保存の検証 | 負値・欠落で ERR-MEAL-006 (400)、不正日時で ERR-MEAL-007 (400)。DBに行が増えない |
 | TC-FEAT08-13 | 非冪等・RLS | 同一内容2回送信で2行入る（現仕様・§10-6）。`user_id` を詐称しても RLS の `WITH CHECK` で拒否される |
-| TC-FEAT08-14 | レート制限・監査ログ | 閾値超過で ERR-MEAL-008 (429) かつ EXT-01 未呼出。外部送信ごとに監査ログ1件、画像バイト列・base64 を含まない（NFR-SEC-AUDIT-01） |
+| TC-FEAT08-14 | 監査ログ | 外部送信ごとに監査ログ1件。画像バイト列・base64 を含まない（NFR-SEC-AUDIT-01） |
 | TC-FEAT08-15 | 性能 | ③〜⑦が20秒以内に応答する（NFR-PERF-04）、⑧が1秒以内（NFR-PERF-02） |
 | TC-FEAT08-16 | 画像サイズの上限（境界） | 1 MB `[仮]` 直下は 200、直上は ERR-MEAL-003 (413)。端末側でも送信前に弾く。1 KB `[仮]` 未満は ERR-MEAL-001 (400) |
 | TC-FEAT08-17 | メモリ上にしか置かないこと | ハンドラ内で画像をファイル・DB・外部保管へ書く呼び出しが1つも無い（実装検査）。応答後に画像を再取得する手段が存在しない |
@@ -639,7 +662,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 2 | ~~`intake_count` の業務的意味が未確定~~（**解決**） | ~~栄養4項目が1食分かその倍かで FEAT-09 の日次合計が変わる~~ → **列を削除した**（ADR-0013・2026-08-08）。合計は導出値であり列で持つとずれるため。日次合計は `SUM(protein_g)` で算出する。係数を掛けるかという論点は消滅した | — |
 | 3 | ~~⑦→⑧の間の手修正の可否~~（**解決**） | ~~§7 で手修正可としたが要件に明記が無い~~ → **手修正は不可**（ADR-0015・2026-08-08）。解析結果は表示のみで入力欄にしない。手入力の経路も持たない。利用者はタンパク質量を知らず、それを知るために撮影するため、手入力は代替にならない。帰結は #14 | — |
 | 4 | 解析結果を保存へ渡す経路がクライアント経由 | ⑧の INSERT は Flutter が PostgREST へ直接発行するため、保存値をクライアントが自由に構成できる。DB 側に照合対象が無く RLS も「誰の行か」しか守らない。短命トークンや RPC 化で検証できるが構成が増える | 🟡 中 |
-| 5 | 画像を保持しないことの実装的保証（ADR-0003 の破棄は自システム内に限る） | (a) 関数ログ・一時領域は未検証。(b) アプリログへの base64 出力を防ぐ規律（§6）。(c) Gemini 側の保持・学習は ADR-0001 の申し送り（ZDR）が未消化で NFR-SEC-06 も更新待ち | 🔴 高 |
+| 5 | 画像非保持は自システム内だけ担保する（**部分解決**） | **自システム内は確定済み**（2026-08-08・§1）。DB に列を持たず、保管を使わず、ログに画像を出さない。**残るのは Google 側の設定のみ**。保持・学習利用は未確認で、実装着手前に調べる。NFR-SEC-06 は `⚠️ 要確認` のまま維持する | 🟡 中 |
 | 6 | 二重記録を防ぐ手段が無い | ⑧は非冪等で、再送・二重タップで2行入る（ボタン無効化は緩和にすぎない）。同じ食事を2回食べることは正当なため UNIQUE を置ける自然キーが無く、新列追加も禁止。表示側の重複検知か段3 §1 の冪等キー運用が要る | 🟡 中 |
 | 7 | 脂質の精度をUIでどう扱うか（糖質 9.8% も n=10 の小標本） | 脂質 MAPE 32.7% は上位5モデル中で最悪（ADR-0001）。**手修正で補正する道は無くなった**（#3・ADR-0015） | 🟡 中 |
 | 〃 | 〃 | 残る選択肢は3つ。(a) 注記のみで許容する（本案）、(b) 非表示にする＝0保存は虚偽値になるため不可、(c) モデルを Pro へ昇格＝+1.7秒 | 〃 |
@@ -647,11 +670,14 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 8 | 複数料理の内訳を持てない | `dish_names[]` が複数でも栄養値は写真全体の合計としか解釈できない。定食の一部を残す・小鉢だけ別カウントといった調整ができず、利用者は手で按分するしかない。子テーブルが要るが新テーブル追加は禁止のため合計として確定する | 🟡 中 |
 | 9 | プロンプト文言が未確定 | §3.2 の `MEAL_ANALYZE_PROMPT` は PoC の実測プロンプト（コンビニ・外食チェーン前提）が基線。家庭料理も含む本番用途では文言が合わない。変えると ADR-0001 の実測 MAPE の前提が崩れ再ベンチが要る | 🟡 中 |
 | 10 | 横断方針の正本が未記入 | `../07_実装共通設計パターン.md` はエラー分類・トランザクション・冪等・リトライの各表が未記入。本書の §5・§6 は FEAT-08 固有の判断として先行して書いている。同ファイル確定時に齟齬が出る可能性がある | 🟡 中 |
-| 11 | レート制限の実装基盤が未決 | NFR-SEC-05 の閾値は未定（本書 20回/時・100回/日 `[仮]`）。Edge Function はインスタンス間でメモリを共有せず、プロセス内カウンタでは制限にならない。永続カウンタが要るが物理DBに該当表が無く新設も禁止 | 🟡 中 |
+| 11 | ~~レート制限の実装基盤が未決~~（**解決**） | **2026-08-08 決定。実装しないことで確定**（ADR-0016）。カウンタテーブルも閾値も持たない。永続カウンタの置き場所を決める議論は不要になった（§3.4） | — |
+| 〃 | 〃 | 防御は2層。**UI は送信中に［解析する］を無効化**し、**Gemini API の日次クォータ**が超過を `ERR-AI-QUOTA` で止める（§3.4・§7） | — |
+| 〃 | 〃 | `ERR-MEAL-008` は**欠番**として残す。他の ERR-ID を繰り上げない（§6）。残る指摘は #16 | — |
 | 12 | ~~**根拠ADRのうち ADR-0001 が改訂を要する**（ADR-0002 も Flutter へ置換）~~（**解決**） | **ADR-0011 が根拠になった**（Gemini API 直接・フォールバック不在の受容・TC-FEAT08-08）。ADR-0002 は **ADR-0010** で置換済み。**ADR-0003 は改訂不要**（直接送信・端末側リサイズ必須という当初方針と整合・§1） | — |
 | 13 | ボディ上限が未文書化のまま直接POSTを採っている | 公式 Limits に記載が無く実測で判断。実測は中央値 163 KB・最大 303 KB、base64 で約 400 KB＝メモリ 256 MB の 0.2% 未満。上限値は不明のため実装時に1回疎通検証する（TC-FEAT08-18） | 🟡 中 |
 | 14 | AI 失敗時に食事を記録できない（#3 の確定に伴う新規） | NFR-AVAIL-05 は「AI不達時も記録・閲覧は継続」としているが、食事記録では成立しない。手入力は代替にならない（利用者が値を知らないため・ADR-0015）。トレーニング記録と閲覧は影響を受けず要件全体は崩れないが、**要件の文言が実態と合っていない**。要件側の見直しが要る | 🟡 中 |
 | 15 | 端末時刻を信頼する（#1 の確定に伴う新規） | 日付は端末TZで決める（ADR-0014）。利用者が端末の日付を変えると記録日がずれる。単一利用者の現行運用では実害が小さいため受容する。サーバ側に照合材料は持たない | 🟢 低 |
+| 16 | NFR-SEC-05 を掲げながら実装しない（#11 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない。**指摘の内容は `FEAT-03_AIメニュー提案.md` §10 #18 と同じ**。要件側への申し送りも同書に集約する | 🟡 中 |
 
 > ~~⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。~~（**解決**・2026-08-08）
 > ~~直接呼び出しで宣言的フォールバックが失われる点を、許容するか代替を実装するかを決めてください。~~
@@ -684,9 +710,12 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 > トレーニング記録と閲覧は継続するため要件全体は崩れませんが、文言が実態と合っていません。
 
 > ⚠️ 要確認（人間判断）: #5 Gemini API 側のデータ保持・学習拒否設定を確認してください。
-> ADR-0001 の申し送りと NFR-SEC-06 を確定してください。
-> NFR-SEC-06 は `docs-nfr` 側で `⚠️ 要確認` のまま更新待ちです。
-> 未確定のまま本番運用に入ると ADR-0003 の前提が崩れます。
+>
+> - **自システム内は確定しました**（2026-08-08）。DB・保管・ログの3点で担保します（§1）
+> - **残るのは Google 側の設定だけ**です。保持と学習利用は未確認のままです
+> - **実装着手前に調べます。** 本番運用に入る前に確定させてください
+> - NFR-SEC-06（写真の外部送信・保持）の `⚠️ 要確認` は**維持**します
+> - 未確認のまま本番運用に入ると ADR-0003 の前提が崩れます
 
 > ⚠️ 要確認（人間判断）: #7 脂質の精度（MAPE 32.7%）に対する UI 上の扱いを決めてください。
 >
@@ -697,6 +726,6 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 
 > ⚠️ 要確認（人間判断）: 本書の `[仮]` 数値は根拠となる実測・要件が無いため暫定です。実機検証後に確定してください。
 > **§3.1**: 許可 MIME 3種。**§3.2**: エンドポイントのパス・フィールド名・`thinkingLevel`・タイムアウト 18秒。
-> **§3.4**: 画像バイト長の下限 1 KB・上限 1 MB・栄養値の妥当域・レート制限閾値。
+> **§3.4**: 画像バイト長の下限 1 KB・上限 1 MB・栄養値の妥当域。
 
 > 関連: API契約＝`../../30_データ・IF設計/02_API設計.md` / 物理DB＝`../01_DB物理設計.md` / DB規約＝`../06_DB設計規約.md` / 横断方針＝`../07_実装共通設計パターン.md` / ログ＝`../05_ログ設計.md` / シーケンス＝`../../40_機能設計/01_シーケンス設計.md`。
