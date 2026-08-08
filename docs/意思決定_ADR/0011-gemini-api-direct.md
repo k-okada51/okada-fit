@@ -124,7 +124,8 @@ status: draft
   - `generateContent` は引き続きサポートされる。
   - **本ADRでは `generateContent` を採る。移行するかの判断が別途要る。**
 - ⚠️ 要確認（人間判断）: 日次クォータ超過（`ERR-AI-QUOTA`）は当日回復しない。利用者への伝え方を決める必要がある。
-- ⚠️ 要確認（人間判断）: **思考量（`thinking_level`）を決める現行の ADR が無い（🟡 中・2026-08-08 判明）。**
+- ~~⚠️ 要確認（人間判断）: **思考量（`thinking_level`）を決める現行の ADR が無い。**~~（**解決**・2026-08-08・**ADR-0018** で `medium` に確定）
+  - 以下は判明時点の記録として残す。**採用値は `medium`。`high` は使わない。**
   - ADR-0001 は `reasoning: high` を実測ベンチの根拠つきで選んでいた。指定は `providerOptions.google.thinkingConfig`（AI SDK の経路）だった。
   - **本ADRは経路だけを改訂し、思考量に触れていない。** ADR-0001 は Superseded のため、`high` を定める現行の記録が存在しない。
   - 直接呼び出しでの正しいパラメータは **`thinking_level`**。値は `minimal` / `low` / **`medium`（既定）** / `high`。

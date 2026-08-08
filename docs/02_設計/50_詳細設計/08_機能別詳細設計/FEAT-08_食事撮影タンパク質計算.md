@@ -261,7 +261,7 @@ API 仕様は **2026-08-08 に公式ドキュメントで確認済み**。**REST
 | 構造化出力 | `generationConfig.response_mime_type = "application/json"` ＋ `generationConfig.response_schema` | EXT-01 |
 | 応答の取り出し | `candidates[0].content.parts[0].text` を `JSON.parse` | EXT-01 |
 | 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback`（ログ用・§6） | EXT-01 |
-| reasoning | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high`。**`thinkingConfig` は誤り** | EXT-01 |
+| reasoning | **`thinking_level: medium`**（確定・ADR-0018）。取り得る値は `minimal`／`low`／`medium`（既定）／`high`。**`thinkingConfig` は誤り** | EXT-01 |
 | 同上・併用禁止 | `thinking_budget`（旧）と併用すると 400 エラーになる。本PJは併用しない | EXT-01 |
 | 同上・本PJの値 | 未確定。ADR-0001 は `high` だが根拠が失われた。`medium` と比較する | §10-17 |
 | タイムアウト | `signal: AbortSignal.timeout(18_000)` `[仮]`。20秒に2秒の応答余裕 | NFR-PERF-04 |
@@ -320,7 +320,7 @@ const res = await fetch(
       generationConfig: {
         response_mime_type: 'application/json',
         response_schema: MEAL_NUTRITION_RESPONSE_SCHEMA,
-        thinking_level: 'high',                           // medium と比較して確定する（§10-17）
+        thinking_level: 'medium',                         // 確定（ADR-0018）。thinking_budget は併用しない
         // thinking_budget（旧）は併用しない。併用すると 400 エラーになる
       },
     }),
@@ -710,7 +710,7 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 | 14 | AI 失敗時に食事を記録できない（#3 の確定に伴う新規） | NFR-AVAIL-05 は「AI不達時も記録・閲覧は継続」としているが、食事記録では成立しない。手入力は代替にならない（利用者が値を知らないため・ADR-0015）。トレーニング記録と閲覧は影響を受けず要件全体は崩れないが、**要件の文言が実態と合っていない**。要件側の見直しが要る | 🟡 中 |
 | 15 | 端末時刻を信頼する（#1 の確定に伴う新規） | 日付は端末TZで決める（ADR-0014）。利用者が端末の日付を変えると記録日がずれる。単一利用者の現行運用では実害が小さいため受容する。サーバ側に照合材料は持たない | 🟢 低 |
 | 16 | NFR-SEC-05 を掲げながら実装しない（#11 の確定に伴う新規） | レート制限は要件化されているが実装しない。**要件側の見直しが要る**。`GEMINI_API_KEY` が漏れた場合、日次クォータを使い切られるまで止められない。**指摘の内容は `FEAT-03_AIメニュー提案.md` §10 #18 と同じ**。要件側への申し送りも同書に集約する | 🟡 中 |
-| 17 | `thinking_level` の値に根拠が無い（Gemini API 仕様確定に伴う新規） | ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選んだ。しかし新体系の既定は `medium` である。PoC は旧パラメータでの測定であり、`high` を維持する根拠は現状は無い。`medium` で足りれば応答が速くなり安くなる可能性がある。**実装時に `medium` と `high` を比較する**（§3.2） | 🟡 中 |
+| 17 | ~~`thinking_level` の値に根拠が無い~~（**解決**） | ~~ADR-0001 の `high` は旧パラメータ体系の実測で根拠が失われた~~ → **`medium` を採用**（2026-08-08・ADR-0018）。既定であり公式の推奨。`high` を選び直す根拠が無い。精度が足りなければ `high` へ上げる（1行の変更で戻せる。ADR-0018 の ⚠️ に残課題） | — |
 | 18 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
 
 > ~~⚠️ 要確認（人間判断）: #12 ADR-0001（Vercel AI Gateway 採用）の改訂または後継ADRの起票が必要です。~~（**解決**・2026-08-08）
@@ -758,10 +758,10 @@ SCR-04 食事記録。`ERR-MEAL-*` の番号順ではなく、利用者の操作
 > - なお現設計で画面に出るのはタンパク質（MAPE 10.5%）だけです。脂質は記録されますが表示されません。
 > - 表示しないなら精度の問題は顕在化しないため、**注記のみで許容するのが妥当**と考えます。
 
-> ⚠️ 要確認（人間判断）: #17 `thinking_level` を `medium` と `high` のどちらにするか決めてください。
-> - `medium` が新しい既定です。足りるなら応答が速くなり、費用も下がる可能性があります。
-> - ADR-0001 の実測は旧パラメータ体系のもので、`high` を維持する根拠になりません。
-> - 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
+> ~~⚠️ 要確認（人間判断）: `thinking_level` を `medium` と `high` のどちらにするか。~~（**解決**・2026-08-08・ADR-0018）
+> **`medium` を採用する。** 既定であり公式の推奨。`high` を選び直す根拠が無い。
+> ADR-0001 の実測は旧パラメータ体系のもので、新体系の `high` を正当化しない。
+> **精度が足りなければ `high` へ上げる。** 1行の変更で戻せる（ADR-0018 の ⚠️）。
 
 > ⚠️ 要確認（人間判断）: 本書の `[仮]` 数値は根拠となる実測・要件が無いため暫定です。実機検証後に確定してください。
 > **§3.1**: 許可 MIME 3種。**§3.2**: タイムアウト 18秒。

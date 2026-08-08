@@ -432,7 +432,7 @@ status: draft
 | 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
 | 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
 | system 指示 | `systemInstruction: { parts: [{ text }] }` |
-| 思考量 | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high` |
+| 思考量 | `thinking_level: medium`（**確定**・ADR-0018）。取り得る値は `minimal`／`low`／`medium`（既定）／`high` |
 | 応答の取り出し | `candidates[0].content.parts[0].text` |
 | 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback` |
 
@@ -509,11 +509,10 @@ Edge Function 側の実行上限（2026-08-08 確認済み）。打ち切りは�
 
 > ⚠️ 要確認（人間判断）: **`generateContent` はレガシー扱い**になっている。2026年6月に Interactions API が GA となり、新規プロジェクトにはそちらが推奨されている。`generateContent` は引き続きサポートされる。本改訂は `generateContent` のままとした。移行するかは人間が判断する。移行する場合は §4.1・§4.2 の内部呼び出しと §5.3 の写像を見直すことになる。
 
-> ⚠️ 要確認（人間判断）: `thinking_level` を `medium` と `high` のどちらにするか決めてください（🟡 中）。
-> ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選びました。
-> しかし新体系の既定は `medium` です。PoC は旧パラメータ体系での測定でした。
-> そのため `high` を維持する根拠は現状ありません。`medium` で足りれば速く安くなる可能性があります。
-> 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
+> ~~⚠️ 要確認（人間判断）: `thinking_level` を `medium` と `high` のどちらにするか。~~（**解決**・2026-08-08・ADR-0018）
+> **`medium` を採用する。** 既定であり公式の推奨。`high` を選び直す根拠が無い。
+> ADR-0001 の実測は旧パラメータ体系のもので、新体系の `high` を正当化しない。
+> **精度が足りなければ `high` へ上げる。** 1行の変更で戻せる（ADR-0018 の ⚠️）。
 
 > 参考（🟢 低）: 構造化出力と思考の併用で不具合報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する。
 

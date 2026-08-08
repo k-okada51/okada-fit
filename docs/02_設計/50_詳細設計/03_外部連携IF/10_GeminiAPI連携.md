@@ -32,7 +32,7 @@ status: draft
 | 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
 | 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
 | system 指示 | `systemInstruction: { parts: [{ text }] }` |
-| 思考量 | `thinking_level`。値は `minimal`／`low`／`medium`（既定）／`high` |
+| 思考量 | `thinking_level: medium`（**確定**・ADR-0018）。取り得る値は `minimal`／`low`／`medium`（既定）／`high` |
 | 応答の取り出し | `candidates[0].content.parts[0].text` |
 | 応答の付帯情報 | `candidates[0].finishReason`／`usageMetadata`／`promptFeedback` |
 
@@ -50,6 +50,7 @@ status: draft
 | 項目 | 内容 |
 |---|---|
 | パラメータ名 | `thinking_level` |
+| **採用値** | **`medium`**（確定・2026-08-08・ADR-0018）。`high` は使わない |
 | 取り得る値 | `minimal`／`low`／`medium`（既定）／`high` |
 | 併用禁止 | `thinking_budget`（旧）と併用すると **400 エラー**になる |
 | 本PJの値 | 未確定。ADR-0001 は `high` だが根拠が失われた（§4 #10） |
@@ -212,7 +213,7 @@ Gemini API の応答は `status` と `error.status` の組で判別する。公�
 | 7 | 監査ログの項目 | `../05_ログ設計.md` 側の項目定義が未確定。プロンプト本文と画像を記録しないことは ADR-0003 から必須 | 🟢 低 |
 | 8 | 実行上限 | 確認済み。実行時間 無料150秒／有料400秒、CPU 2秒（非同期I/Oは除く）、メモリ256MB。**残る未確定はボディ上限のみ** | 🟢 低 |
 | 9 | AI 失敗時に食事を記録できない（#5 の確定に伴う新規） | 手入力は代替にならない。利用者はタンパク質量を知らず、それを知るために写真を撮るため。トレーニング記録と閲覧は影響を受けず要件全体は崩れないが、NFR-AVAIL-05 の文言が実態と合っていない。要件側の見直しが要る | 🟡 中 |
-| 10 | `thinking_level` の値に根拠が無い | ADR-0001 は PoC 実測（`reasoning: high`）を根拠に `high` を選んだ。しかし新体系の既定は `medium` である。PoC は旧パラメータでの測定であり、`high` を維持する根拠は現状は無い。`medium` で足りれば応答が速くなり安くなる可能性がある。**実装時に `medium` と `high` を比較する** | 🟡 中 |
+| 10 | ~~`thinking_level` の値に根拠が無い~~（**解決**） | ~~ADR-0001 の `high` は旧パラメータ体系の実測で根拠が失われた~~ → **`medium` を採用**（2026-08-08・ADR-0018）。既定であり公式の推奨。`high` を選び直す根拠が無い。精度が足りなければ `high` へ上げる（1行の変更で戻せる。ADR-0018 の ⚠️ に残課題） | — |
 | 11 | 構造化出力と思考の併用（参考情報） | 応答が空になる・トークン消費が膨らむという報告がある。ただし File Search 併用時の事例で、本PJ（`generateContent` 単体・File Search なし）とは条件が違う。現時点で本PJに影響するとは言えない。実装時に構造化出力が正しく返るかを確認する | 🟢 低 |
 | 12 | ~~Gemini API 仕様が未確認~~（**解決**） | **2026-08-08 公式ドキュメントで確認した**（§1）。エンドポイント・認証ヘッダ・モデルID・`inline_data`・`response_mime_type`／`response_schema`・`systemInstruction`・応答の取り出しが確定。**REST の JSON は snake_case**。`thinkingConfig` は誤りで、正しくは `thinking_level` | — |
 
@@ -220,10 +221,10 @@ Gemini API の応答は `status` と `error.status` の組で判別する。公�
 > - **縮退のみで確定した。** 別プロバイダへの二重化は行わない。
 > - したがって **EXT-ID の追加も発生しない**。連携先は EXT-01 の1件のみである。
 
-> ⚠️ 要確認（人間判断）: 論点10について、`thinking_level` を `medium` と `high` のどちらにするか決めてください。
-> `medium` が新しい既定です。足りるなら応答が速くなり、費用も下がる可能性があります。
-> ADR-0001 の実測は旧パラメータ体系のもので、`high` を維持する根拠になりません。
-> 実装時に両方を実測し、精度と所要時間を比べたうえで判断してください。
+> ~~⚠️ 要確認（人間判断）: `thinking_level` を `medium` と `high` のどちらにするか。~~（**解決**・2026-08-08・ADR-0018）
+> **`medium` を採用する。** 既定であり公式の推奨。`high` を選び直す根拠が無い。
+> ADR-0001 の実測は旧パラメータ体系のもので、新体系の `high` を正当化しない。
+> **精度が足りなければ `high` へ上げる。** 1行の変更で戻せる（ADR-0018 の ⚠️）。
 
 > ⚠️ 要確認（人間判断）: 論点9について、NFR-AVAIL-05 の文言を見直してください。
 > 「AI不達時も記録・閲覧は継続する」としていますが、食事記録では成立しません。
