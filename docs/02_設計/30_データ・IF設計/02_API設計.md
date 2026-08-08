@@ -43,10 +43,22 @@ status: draft
 | 冪等キー | **当面持たない**。処理済みキーの保存先が無いため（`../50_詳細設計/07_実装共通設計パターン.md §3`） |
 | ページング/ソート/フィルタ | データ小規模のため当面ページングなし。並び順は各機能設計で指定する |
 | 期間指定 | RPC 引数で渡す。`p_period`＝`day`/`week`/`month`、範囲は `p_range_start`・`p_range_end`（date） |
+| 「当日」の基準 | **日付はアプリが端末のタイムゾーンで決めて渡す。RPC 内で `CURRENT_DATE` を使わない**（2026-08-08 確定・ADR-0014） |
 | 日時・数値・enum 表現 | 日時=ISO 8601（`date`/`time`）。栄養値=`float`、回数等=`int`。enum=`body_part`（胸/背中/脚/肩/腕） |
 | 命名 | キー・列名は snake_case。RPC 引数は `p_` 接頭辞（`../50_詳細設計/06_DB設計規約.md §5`） |
 | 冪等性・リトライ | 参照系は冪等。AI呼び出し（`analyze-meal`／`generate-menu`）は非冪等・**自動リトライしない**（従量課金のため）。429時のみ指数バックオフ |
 | レート制限 | AI呼び出しはコスト・悪用防止のため制限（NFR-SEC-05）。閾値は実装時 |
+
+日付を引数で受け取る関数は2つ。**どちらもアプリが決めた暦日をそのまま使う。**
+
+| 関数 | 引数 | 意味 |
+|---|---|---|
+| `get_dashboard` | `p_today`（date・必須） | 当日。ゲージと今月の集計の基準になる |
+| `get_protein_remaining` | `p_target_date`（date・必須） | 集計対象日。残量のリセット境界になる |
+
+- Supabase は UTC で動く。`CURRENT_DATE` を使うと日本時間の深夜に日付がずれる。
+- 端末TZで決める対象は3つ。`meal_logs.eaten_date`・残量のリセット・ヒートマップの日付。
+- 海外にいるときは現地の日付で区切られる。端末の日付を変えると記録日もずれる。
 
 ## 2. 想定API一覧
 > 📝 ここに本システムで想定するAPIを機能横断で棚卸しする（契約確定前の見取り図）。契約が固まったものは §3・§4 に落とす。{用途／想定メソッド・パス／対応FEAT-ID／対応EXT-ID／優先度（MUST/NICE）／確定状態（[確定]/[暫定]）}。
@@ -56,7 +68,7 @@ status: draft
 | 用途 | 方式・呼び出し | 対応FEAT | 対応IF | 優先 | 確定状態 |
 |---|---|---|---|---|---|
 | 器具(マシン)登録・更新・削除 | RPC `create_machine` / `update_machine` / `delete_machine` | FEAT-01 | 内部 | MUST | [暫定] |
-| 部位→器具の絞り込み | PostgREST 埋め込み select（3ホップ＋`DISTINCT`） | FEAT-02 | 内部 | MUST | [暫定] |
+| 部位→器具の絞り込み | PostgREST 埋め込み select（3ホップ＋`DISTINCT`＋`gym_id`） | FEAT-02 | 内部 | MUST | [暫定] |
 | 種目マスタ管理 | PostgREST `training_menus`（select/insert/update/delete） | FEAT-01/03 | 内部 | MUST | [暫定] |
 | ジム／入館 | PostgREST `gyms`・`gym_visits` | FEAT-01/04 | 内部 | MUST | [暫定] |
 | AIメニュー提案 | Edge Function `generate-menu` | FEAT-03 | EXT-01 | MUST | [暫定] |
@@ -79,19 +91,19 @@ status: draft
 | RPC | `rpc('create_machine', {p_gym_id, p_name, p_menu_ids})` | 内部 | 要 | 器具登録。`training_machines`＋`machine_menus` を1トランザクションで書く |
 | RPC | `rpc('update_machine', {p_machine_id, p_gym_id, p_name, p_menu_ids})` | 内部 | 要 | 器具の改名・紐づけ差し替え（全置換） |
 | RPC | `rpc('delete_machine', {p_machine_id})` | 内部 | 要 | 器具削除。中間行は FK の `ON DELETE CASCADE` で消える |
-| PostgREST | `from('training_machines').select(埋め込み)` | 内部 | 要 | 器具一覧・1件再取得。ジム名・種目名・部位を同梱する |
+| PostgREST | `from('training_machines').select(埋め込み).eq('gym_id', …)` | 内部 | 要 | 器具一覧・1件再取得。ジム名・種目名・部位を同梱する。**`gym_id` でジムを絞り込む** |
 | PostgREST | `from('training_menus').select(埋め込み).eq('body_part', …)` | 内部 | 要 | 部位で種目→中間→器具を絞り込む（`DISTINCT`・AI不使用・RULE-004） |
 | PostgREST | `from('training_menus')` の select/insert/update/delete | 内部 | 要 | 種目マスタ（name・body_part・how_to） |
 | PostgREST | `from('gyms')` の select/insert | 内部 | 要 | ジム管理。更新・削除は現行契約に無い |
-| PostgREST | `from('gym_visits').insert(...)` | 内部 | 要 | 入館記録（ヒートマップの実施有無元） |
+| PostgREST | `from('gym_visits').insert(...)` | 内部 | 要 | 入館記録。**ヒートマップの集計には使わない**（塗り条件は §4.3） |
 | Edge Function | `functions.invoke('generate-menu')` | EXT-01 | 要 | 部位＋器具から AI がメニュー提案（FEAT-03・§4.2） |
 | RPC | `rpc('create_training_session', {p_performed_date, p_menu_ids, p_is_done})` | 内部 | 要 | トレーニング記録（セッション＋明細を1トランザクション・T01） |
 | PostgREST | `from('training_session_details').update({is_done:true})` | 内部 | 要 | 実行済トグル（T02）。状態ガード `.eq('is_done', false)` 付き `[仮]` |
-| RPC | `rpc('get_dashboard', {p_period, p_today, p_range_start, p_range_end})` | 内部 | 要 | ゲージ＋ヒートマップの集計（FEAT-05・§4.3） |
+| RPC | `rpc('get_dashboard', {p_period, p_today, p_range_start, p_range_end, p_month_start, p_month_end})` | 内部 | 要 | ゲージ＋今月の回数＋ヒートマップの集計（FEAT-05・§4.3） |
 | PostgREST | `from('users').select(...).single()` ／ `.update(patch)` | 内部 | 要 | 体重・氏名・目標回数（FEAT-06） |
 | SQL関数 | `rpc('calc_target_protein_g', {p_weight_kg})` | 内部 | 要 | 必要量の算出（RULE-001）。同じ式の Dart 純関数が正本（FEAT-07） |
 | Edge Function | `functions.invoke('analyze-meal')` | EXT-01 | 要 | 食事画像→Gemini API→栄養4項目（保存はしない・§4.1） |
-| PostgREST | `from('meal_logs').insert(...)` | 内部 | 要 | 食事記録の保存（栄養4項目・画像は非保存） |
+| PostgREST | `from('meal_logs').insert(...)` | 内部 | 要 | 食事記録の保存（栄養4項目＋日時・画像は非保存）。**摂取数は送らない**（ADR-0013） |
 | RPC | `rpc('get_protein_remaining', {p_target_date, p_limit})` | 内部 | 要 | 当日残量＝目標−摂取、不足を補う食品候補（FEAT-09・§4.4） |
 | RPC | `rpc('import_foods', {p_rows})` | 内部 | 要 | 食事マスタCSV取込（FEAT-10）。`ON CONFLICT (name) DO NOTHING` |
 
@@ -115,6 +127,8 @@ status: draft
 | 往復 | 1回のみ。器具ごとに引き直す N+1 を作らない |
 | `DISTINCT` の位置 | 器具IDで畳み込む処理を Flutter 側の純関数で行う。畳まないと同じ器具が複数行に現れる |
 | 埋め込み側で絞る場合 | 経路上の全段に `!inner` が要る（`machine_menus!inner` ＋ `training_machines!inner`） |
+| ジムの絞り込み | **`gym_id` の条件を加える**（2026-08-08 確定）。埋め込みの `training_machines` 側で絞る |
+| ジムが1件のとき | 選択UIを出さず、そのジムを自動で使う `[仮]` |
 
 ### 旧契約との対比（移行のための対応表）
 
@@ -181,6 +195,9 @@ status: draft
 
 - 画像・料理名は**保存しない**（ADR-0003）。画像は関数のメモリ上にのみ存在する。
 - 保存は第2段の PostgREST `supabase.from('meal_logs').insert(...)`（栄養4項目＋日時）。
+- 送る列は栄養4項目・`eaten_date`・`eaten_time` だけ。**摂取数の列は持たない**（ADR-0013）。
+- `eaten_date` は Flutter が端末TZで決めて渡す（ADR-0014）。DB の現在日付を使わない。
+- 解析結果は**手修正できない**。手入力の経路も持たない（ADR-0015）。操作は記録と撮り直しの2つ。
 - 第1段（AI）と第2段（保存）は別呼び出し。外部I/Oをトランザクションの外に置くため。
 - 第1段の結果は画面状態に保持し、**第2段だけを再送できる**UIにする（再課金の回避）。
 
@@ -231,19 +248,35 @@ status: draft
 
 | 引数 | 型 | 必須 | 内容 |
 |---|---|---|---|
-| `p_period` | `text` | 任意（既定 `month`） | `day` / `week` / `month` `[仮]` |
-| `p_today` | `date` | 必須 `[仮]` | 「当日」の暦日。Flutter が端末TZで解決して渡す |
-| `p_range_start` | `date` | 必須 `[仮]` | 表示範囲の開始日（閉区間） |
-| `p_range_end` | `date` | 必須 `[仮]` | 表示範囲の終了日（閉区間） |
+| `p_period` | `text` | 任意（既定 `month`） | `day` / `week` / `month` `[仮]`。**ヒートマップの表示範囲だけを変える** |
+| `p_today` | `date` | 必須 | 「当日」の暦日。Flutter が端末TZで解決して渡す（ADR-0014） |
+| `p_range_start` | `date` | 必須 `[仮]` | ヒートマップの表示範囲の開始日（閉区間） |
+| `p_range_end` | `date` | 必須 `[仮]` | ヒートマップの表示範囲の終了日（閉区間） |
+| `p_month_start` | `date` | 必須 | **今月の初日**。`training_count` の集計に使う |
+| `p_month_end` | `date` | 必須 | **今月の末日**。同上 |
+
+`p_range_*` と `p_month_*` は別物。前者はヒートマップの表示範囲、後者は今月の実施日数の集計範囲で、`p_period` の影響を受けない。
+
+戻り値は3要素。**`p_period` が効くのは `heatmap` だけである。**
+
+| キー | 内容 | `p_period` への依存 |
+|---|---|---|
+| `protein_gauge` | 当日のタンパク質ゲージ | **依存しない。常に当日**（2026-08-08 確定） |
+| `training_count` | 今月の実施日数と目標回数 | 依存しない。常に今月 |
+| `heatmap` | 日ごとの実施有無と種目名 | 依存する（`p_range_start`〜`p_range_end`） |
 
 ```jsonc
 // 戻り値（json 1値・型のみ）
 {
-  "protein_gauge": {
-    "weight_kg": "float|null",   // users.weight_kg をそのまま返す。未設定は null  [仮]
-    "intake_g":  "float"         // 当日の meal_logs.protein_g 合計。記録なしは 0
+  "protein_gauge": {                 // 常に当日。体重が未設定なら protein_gauge ごと null
+    "weight_kg": "float(>0)",        // users.weight_kg をそのまま返す
+    "intake_g":  "float(>=0)"        // 当日の meal_logs.protein_g 合計。記録なしは 0
   },
-  "heatmap": [
+  "training_count": {                // 今月の実施状況。p_period に依存しない
+    "done_days": "int(>=0)",         // 今月の実施日数。heatmap と同じ条件で数える
+    "target":    "int(>=0)"          // users.target_training_count（既定12・RULE-007）
+  },
+  "heatmap": [                       // p_range_start〜p_range_end の範囲
     { "date": "date", "done": "boolean", "menu_names": ["string"] }
   ]
 }
@@ -253,8 +286,34 @@ status: draft
 
 | 項目 | 算出 |
 |---|---|
-| `target_g` | `weight_kg` を FEAT-07 の Dart 純関数へ渡す（RULE-001＝体重×2g）。null なら null |
-| `rate_pct` | `calcGaugeRatePct`。達成率100%で頭打ち（ADR-0002）。`target_g` が null なら null |
+| `target_g` | `weight_kg` を FEAT-07 の Dart 純関数へ渡す（RULE-001＝体重×2g） |
+| `rate_pct` | `calcGaugeRatePct`。達成率100%で頭打ち（ADR-0002） |
+| `protein_gauge` が null | 両方とも算出しない。ゲージの位置に体重登録の導線を出す |
+
+ゲージは日単位で完結する。週・月の平均や累積は取らない。
+
+| 事項 | 内容 |
+|---|---|
+| 期間の影響 | **受けない。`p_period` を変えてもゲージは当日のまま**（2026-08-08 確定） |
+| 体重が未設定 | `protein_gauge` を `null` にして **200 を返す** `[仮]`。エラーにしない |
+| そのときの他要素 | `training_count`・`heatmap` は通常どおり返す |
+
+ヒートマップの塗り条件を確定した（2026-08-08）。
+
+| 事項 | 内容 |
+|---|---|
+| 塗る | その日の `training_session_details.is_done` が **1件以上 true** |
+| 塗らない | `training_sessions` の行があるだけの日（予定のみ・未実施） |
+| 使わない | **`gym_visits`（入館履歴）**。入館は実施の証拠にならない |
+
+`training_count` は目標回数の達成状況を返す（画面表示は「実施日数 / 目標回数」）。
+
+| 項目 | 内容 |
+|---|---|
+| `done_days` | 今月のうち、上の「塗る」条件を満たす**日数**。ヒートマップと同じ集計元 |
+| `target` | `users.target_training_count`。既定は12（RULE-007・FEAT-06） |
+| 「今月」の範囲 | `p_today` が属する月。端末TZ基準（ADR-0014） |
+| `target` が未設定 | サインアップ時に既定12が入るため通常は発生しない。発生時の表示は `[仮]` |
 
 - ヒートマップは実施有無（2値）＋種目名（session→details→menus）。
 - 返すのは**実施記録のある日だけ**。未実施日は Flutter が表示範囲から補完する。
@@ -275,7 +334,7 @@ status: draft
 
 | 引数 | 型 | 必須 | 既定 | 内容 |
 |---|---|---|---|---|
-| `p_target_date` | `date` | 必須 | — | 集計対象日。当日を Flutter が決めて渡す `[仮]` |
+| `p_target_date` | `date` | 必須 | — | 集計対象日。当日を Flutter が端末TZで決めて渡す（ADR-0014） |
 | `p_limit` | `int` | 任意 | `3` | 提示件数 `[仮]`。既定値は関数定義側に持たせる |
 
 ```jsonc
@@ -285,11 +344,13 @@ status: draft
   "intake_g":    "float(>=0)",   // 当日の meal_logs.protein_g 合計
   "remaining_g": "float(>=0)",   // RULE-002。0でクランプ（負値を返さない）
   "suggestions": [               // RULE-005。foods からの決定的抽出（AI不使用）
-    { "food_name": "string", "protein_amount": "float(>0)" }
+    { "food_name": "string", "protein_amount": "float(>0)" }  // 1食分あたり（ADR-0012）
   ]
 }
 ```
 
+- `protein_amount` は**1食分あたり**（ADR-0012）。`remaining_g` とそのまま比較できる。
+- `intake_g` は `protein_g` の単純合計。係数は掛けない（ADR-0013）。
 - `suggestions` は順序が保証された配列。件数は 0〜`p_limit`。
 - `foods` の候補が0件でもエラーにせず `suggestions: []` を返す。
 - DB列名 `foods.name` は `food_name` に写像する。旧契約の項目名を維持するため。
@@ -325,6 +386,8 @@ status: draft
 | 500 | `ERR-AI-FAIL` | 上記以外の AI 失敗 | false |
 
 - AI 失敗時の縮退は共通。**AI機能だけ止め、記録・閲覧は続ける**（NFR-AVAIL-05）。
+- ただし食事記録は例外。**AI が失敗したその食事は記録できない**（手入力なし・ADR-0015）。
+- 指摘として `01_データモデル.md §8-16` に残した。要件側の文言の見直しが要る。
 - 通知は `ScaffoldMessenger.showSnackBar`。`retryable: true` のときだけ再試行アクションを付ける。
 - 機能固有 ERR（`ERR-MACHINE-*` 等）は各 `../50_詳細設計/08_機能別詳細設計/FEAT-*.md §6` が割り当てる。
 

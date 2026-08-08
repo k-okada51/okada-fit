@@ -254,13 +254,23 @@ round1(x) = (x * 10).round() / 10   -- 小数第1位・四捨五入
 
 | # | `weight_kg` | 戻り値 | 呼び出し側の扱い |
 |---|---|---|---|
-| B1 | `null`（FEAT-06 未実施） | `ProteinTargetUnset()` | ERR-PROFILE-020。SCR-05 への誘導。**例外を投げない** |
+| B1 | `null`（FEAT-06 未実施） | `ProteinTargetUnset()` | ERR-PROFILE-020。SCR-05 への誘導。**例外を投げない**（返し方は下表） |
 | B2 | 列未選択・キー欠落 | `ProteinTargetUnset()` | Dart では `null` に正規化されるため B1 と同じ |
 | B3 | `0` | `ProteinTargetInvalid(0)` | ERR-PROFILE-021。CHECK(>0) 違反＝データ不整合としてログ |
 | B4 | 負値 | `ProteinTargetInvalid(weightKg)` | B3 と同じ |
 | B5 | `double.nan` / `±double.infinity` | `ProteinTargetInvalid(weightKg)` | B3 と同じ |
 | B6 | 正の最小値近傍（極小） | `ProteinTargetOk(targetG: round1(w * 2), ...)` | 算出する（業務的な下限判定は FEAT-06 の責務） |
 | B7 | 通常値 | `ProteinTargetOk(targetG, weightKg, coefficient: 2.0)` | そのまま使用 |
+
+体重未設定（B1・B2）のときの返し方は**確定済み**（2026-08-08）。
+
+| 項目 | 内容 |
+|---|---|
+| HTTP | **200**。エラーにしない |
+| `get_dashboard` | `protein_gauge` を階層ごと `null` にする。**正本は FEAT-05 §3** |
+| 画面 | ゲージの位置に「体重を登録すると目標が表示されます」＋ SCR-05 への導線 |
+| 他の表示 | ヒートマップ・トレーニング回数・記録機能は通常どおり動く |
+| `get_protein_remaining` | FEAT-09 が正本。同じ「200 で返す」方針に揃える `[仮]` |
 
 **例外（`throw`）は使わない。**
 
@@ -295,7 +305,8 @@ $$;
 |---|---|
 | `round(x, 1)` の型 | PostgreSQL の2引数 `round` は `numeric` にしか無い。`double precision` のままでは小数桁を指定できないため `::numeric` へキャストする |
 | NULL の伝播 | `calc_target_protein_g(NULL)` は NULL を返す。未設定と不正値の**区別が戻り値だけでは付かない** |
-| 区別の付け方 | RPC は `target_g` に加えて `target_status`（`ok` / `weight_unset` / `weight_invalid`）を返す `[仮]`。Flutter はこの列で ERR-PROFILE-020 と ERR-PROFILE-021 を出し分ける |
+| 未設定の返し方 | `get_dashboard` は `protein_gauge` を null にして 200 を返す（確定・FEAT-05 §3） |
+| 不正値の扱い | 同じ形になるため RPC の戻り値では区別できない。ERR-PROFILE-021 は Dart 側（`calcTargetProteinG`）と DB の CHECK(>0) で防ぐ |
 | `NaN` の扱い | `NaN <= 0` は false、`NaN = 'Infinity'` も false のため上のCASEでは弾けない。`p_weight_kg = p_weight_kg` が false になる性質（`isnan`）で追加判定する `[仮]` |
 
 ### 4.5 ★中心論点: Dart と SQL の二重実装
@@ -381,7 +392,7 @@ final row = await supabase
 
 | ERR-ID | 検出層 | 発生条件 | 利用者向けメッセージ（意図） | retryable | ログ |
 |---|---|---|---|---|---|
-| ERR-PROFILE-020 | Flutter（RPC の `target_status`／`calcTargetProteinG` の戻り値で判定） | 体重が未設定（`users.weight_kg` が NULL＝FEAT-06 未実施） | 体重が未登録であることと、SCR-05 で登録すれば解消することを伝える | false | info（障害ではなく未設定状態の通知。`../05_ログ設計.md` の水準に従う） |
+| ERR-PROFILE-020 | Flutter（`protein_gauge` が null か、`calcTargetProteinG` の戻り値で判定） | 体重が未設定（`users.weight_kg` が NULL＝FEAT-06 未実施） | 体重が未登録であることと、SCR-05 で登録すれば解消することを伝える | false | info（障害ではなく未設定状態の通知。`../05_ログ設計.md` の水準に従う） |
 | ERR-PROFILE-021 | 同上 | 体重が不正値（0以下・NaN・±Infinity） | 目標値を計算できなかったことを伝える。数値そのものは出さない | false | error（CHECK(>0) をすり抜けたデータ不整合として `weight_kg` の値を記録） |
 
 - 本機能は ERR-ID を**予約するだけ**である。
@@ -393,9 +404,10 @@ final row = await supabase
 
 | 項目 | 内容 |
 |---|---|
-| 返し方 `[仮]` | `target_g` を NULL にし `target_status` を添えて 200 で返す |
-| 理由 | 目標値だけのために画面全体を失敗にすると NFR-AVAIL-05 の縮退方針と衝突する（§10 #6） |
-| 旧構成との差 | 「409 / 500 への写像」は成立しない。`target_status` の値で分岐する |
+| 返し方（確定） | 200 で返す。`get_dashboard` は `protein_gauge` を階層ごと `null` にする |
+| 正本 | FEAT-05 §3。本書では再定義しない（2026-08-08 確定・§10 #6） |
+| 理由 | 目標値だけのために画面全体を失敗にすると NFR-AVAIL-05 の縮退方針と衝突する |
+| 旧構成との差 | 「409 / 500 への写像」は成立しない。`protein_gauge` が null か否かで分岐する |
 | 共通エラー応答の形 | `error_code` / `message` / `retryable`。正本は `../../30_データ・IF設計/02_API設計.md §5` |
 
 ログの出先。
@@ -415,7 +427,7 @@ final row = await supabase
 
 | 状態 | SCR-01 ダッシュボード | SCR-05 設定・プロフィール |
 |---|---|---|
-| 初期/空 | ゲージ（`CircularProgressIndicator` または `fl_chart`）を目標未設定として淡色表示 | 体重入力欄が空 |
+| 初期/空 | ゲージは描かない。位置を体重登録の案内に差し替える（表示の正本は FEAT-05 §7） | 体重入力欄が空 |
 | 初期/空 | `Card` + `Icon`(warning) で「体重を登録すると目標が表示されます」＋SCR-05 への `FilledButton` | プレビュー欄は `Text`（`Theme.of(context).disabledColor`）で「—」 |
 | 読込中 | ゲージ領域を `shimmer` の円形プレースホルダで置換 | プレビュー欄を高さ 20 のプレースホルダで置換 |
 | 成功 | ゲージ中央に「摂取 ◯g / 目標 ◯g」を整数表示（達成率は100%頭打ち） | 体重入力の直下に「1日の必要量: ◯g（体重 ◯kg × 2g）」を表示 |
@@ -502,7 +514,7 @@ DB・モック・ウィジェットは不要。
 | 3 | 単位の一貫性 | `weight_kg` は kg、`protein_g` 系と `target_g` は g。どちらも `float`（Dart は `double`）のため取り違えても型検査は通り、関数側でも検出できない（TC-FEAT07-12） | 🟡 中 |
 | 4 | 「目安」表記の要否 | 医療・栄養指導としての正確性は適用外（NFR-OOS-01）。だが「1日の必要量」と断定表示すると医学的根拠のある値と誤認され得る。注記の要否は UI 文言の判断で本設計では確定しない | 🟡 中 |
 | 5 | **Dart と SQL の二重実装（DRY違反・新構成で悪化）** | 集計は RPC（SQL）、SCR-05 のプレビューは Dart に残り**同じ式が2言語に分かれる**。言語が違うため型検査もコンパイラもずれを検出できない。**これを解く設計が本書の中心**（§4.5） | 🔴 高 |
-| 6 | 未設定時の戻り値表現 | `../../30_データ・IF設計/02_API設計.md §4.3`・`§4.4` は `target_g` を `float` と定義し未設定時の表現が無い。画面全体を失敗にするとヒートマップまで消え NFR-AVAIL-05 と衝突 | 🔴 高 |
+| 6 | ~~未設定時の戻り値表現~~（**解決**） | **体重未設定なら `protein_gauge` を `null` にして 200 を返す**（2026-08-08）。エラーにしない。正本は FEAT-05 §3。画面はゲージの位置に体重登録の案内を出す。ヒートマップと記録機能は動くため NFR-AVAIL-05 とも衝突しない。段3 §4.3・§4.4 の契約改訂が要る | — |
 | 7 | 体重の入力精度 | 本機能の丸めは `weight_kg` が妥当な精度で格納されている前提に立つ。入力桁数制限（小数第1位までか等）は FEAT-06 の責務であり、未規定だと丸め結果が不安定になる | 🟢 低 |
 | 8 | `nutrition.dart` の純粋性維持 | Supabase クライアント・環境変数・`dart:io` を import すると単体テストが実行環境に依存し、TDD の起点という位置づけが崩れる。TestFlight 配布物に秘密値を置くと復元可能（NFR-SEC-02） | 🟡 中 |
 | 9 | 案(a) のプレビュー往復依存 | SCR-05 のプレビューが `calc_target_protein_g` の往復に依存し、通信が増えオフラインでは出せない。緩和は (i) デバウンス、(ii) Dart のローカル計算を許す（実質 案(c)） | 🟡 中 |
@@ -512,7 +524,8 @@ DB・モック・ウィジェットは不要。
 - 論点3: 緩和策(a) は変換地点を `calcTargetProteinG` 1箇所に限定する【本書の設計】。
 - 論点3: 緩和策(b) は `extension type Kg(double v)` で単位を型にする。NFR-MAINT-01 に見合うかは人間判断。
 - 論点5: 対策3案は §4.5。TC-FEAT07-09（係数リテラルの静的検査）と TC-FEAT07-10（RPC間の値一致）はどの案でも必ず実装する。
-- 論点6: 本書は「`target_g` を nullable にし `target_status` を併せて返す」を `[仮]` とした（§6）。段3の契約改訂が要る。
+- 論点6: 確定は「`protein_gauge` を null にして 200 を返す」（FEAT-05 §3 が正本・§4.3）。段3の契約改訂が要る。
+- 論点6: 未設定と不正値は戻り値で区別できなくなる。ERR-PROFILE-021 は Dart 側と CHECK(>0) で防ぐ。
 - 論点8: **`app/lib/domain/` にはI/Oを持ち込まない**。Supabase アクセスは `app/lib/data/*_repository.dart` に限定する（§8）。
 - 論点9: **案(a) を採る際に併せて決める必要がある**（§7）。
 
@@ -549,7 +562,9 @@ DB・モック・ウィジェットは不要。
 > - DBスキーマの追加は行わない
 > - 利用者に誤解を与えないUI表現は FEAT-05 §10-13 の論点として残す
 
-> ⚠️ 要確認（人間判断）: #6 体重未設定時の応答形。`target_g` を nullable にし `target_status` を併せて返す案でよいか。段3の契約改訂要否に直結する。
+> ~~⚠️ 要確認（人間判断）: #6 体重未設定時の応答形。`target_g` を nullable にし `target_status` を併せて返す案でよいか。~~（**解決**・2026-08-08）
+> **`protein_gauge` を `null` にして 200 を返す**で確定した。エラーにしない。
+> 契約の正本は FEAT-05 §3。段3（`../../30_データ・IF設計/02_API設計.md §4.3`）の改訂が要る。
 
 > ⚠️ 要確認（人間判断）: #4 SCR-01 / SCR-05 で必要量を「目安」と注記するか。NFR-OOS-01 により医療的正確性は適用外だが、表示文言としての扱いは人間が決める。
 

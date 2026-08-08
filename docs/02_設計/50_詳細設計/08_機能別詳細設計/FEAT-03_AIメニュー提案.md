@@ -35,6 +35,8 @@ status: draft
 | 対応画面 | SCR-03 トレーニング |
 | 対応API | Edge Function `generate-menu`（`supabase.functions.invoke('generate-menu')`）。本書の主対象 |
 | 前段 | 器具一覧の取得は FEAT-02 の責務。Flutter から PostgREST を直接叩く（AI を通さない・RULE-004） |
+| 前段の絞り込み | ジム＋部位で絞る（FEAT-02 §3・§7）。ジムが1件のときは選択UIを出さない `[仮]` |
+| 前段が0件のとき | ［メニュー生成］は非活性。**本機能は呼ばれない**（FEAT-02 §10 #1） |
 | 関連ルール | RULE-003（部位タグ5種）／RULE-004（器具の絞り込みは部位タグ一致のみ・AI不使用）／RULE-006（メニュー提案は AI＝EXT-01 を使う） |
 | 外部連携 | EXT-01（Google Gemini API を Edge Function から直接呼ぶ） |
 | 性能目標 | NFR-PERF-03（AIメニュー提案 ≤15秒）。不達時は NFR-AVAIL-05 の縮退（記録・閲覧は継続） |
@@ -42,13 +44,16 @@ status: draft
 | 優先度 | MUST |
 | AI利用 | あり（生成のみ）。部位→器具の絞り込みは決定的処理で AI 不使用（RULE-004） |
 
-利用者の操作は3ステップ。
+利用者の操作は4ステップ。
 
 | # | 操作 | 処理 |
 |---|---|---|
-| 1 | SCR-03 で部位を1つ選ぶ | FEAT-02 が部位タグ一致の器具リストを返す（PostgREST・AI不使用） |
+| 1 | SCR-03 でジムと部位を選ぶ | FEAT-02 が該当する器具リストを返す（PostgREST・AI不使用） |
 | 2 | 使う器具を選ぶ | Flutter 内の選択状態のみ。通信しない |
 | 3 | ［メニュー生成］を押す | Edge Function `generate-menu` を1回だけ呼ぶ |
+| 4 | 提案から［登録］を押す | その1件だけ `training_menus` に INSERT する（FEAT-01 C-06） |
+
+- 器具が0件のとき③は押せない。前段で非活性にする（§7・FEAT-02 §10 #1）。
 
 Edge Function 側の要点。
 
@@ -57,7 +62,9 @@ Edge Function 側の要点。
 | AI 呼び出し前に必ず DB 検証する | 器具の実在・所有・部位整合を確認する（§4・§5） |
 | 器具↔種目は多対多 | 中間テーブル `machine_menus` で結ぶ。1台の器具が複数の種目・複数の部位に対応する |
 | AI に渡すのは器具IDではない | DB で解決した器具名・対応種目名（器具ごとに複数）・部位を渡す（§3.2） |
-| 生成結果は永続化しない | その場の提案。採用は利用者操作で FEAT-01／FEAT-04 に引き渡す `[仮]`（保存先未定義・§10 #1） |
+| 生成結果は永続化しない | **Edge Function は保存しない。応答を返すだけ**（2026-08-08 決定・§10 #1） |
+| 提案の行き先 | 画面に一覧を出す。利用者が［登録］した1件だけ `training_menus` へ INSERT する |
+| 提案履歴 | **テーブルを作らない。** 画面を離れると提案は消える |
 | 非冪等・自動リトライなし | EXT-01 は従量課金。1リクエスト＝1課金 |
 | 二重送信を抑止する | レート制限（NFR-SEC-05）と UI の disabled の二段で持つ |
 
@@ -73,9 +80,12 @@ sequenceDiagram
   participant D as Supabase DB(PostgREST/RLS)
   participant G as Gemini API(EXT-01)
 
-  U->>F: 部位を選択（RULE-003 の5値）
+  U->>F: ジム（2件以上のとき）と部位を選択（RULE-003 の5値）
   F->>D: ① PostgREST 埋め込み select で器具リスト取得（FEAT-02・AI不使用）
   D-->>F: 器具リスト
+  break 器具0件
+    F->>U: ［メニュー生成］は非活性。SCR-02 への導線（Edge Function を呼ばない）
+  end
   U->>F: 使う器具を選択 →［メニュー生成］
   Note over F: 送信中はボタン disabled（二重送信＝二重課金の抑止）
   F->>E: ② functions.invoke('generate-menu') { body_part, machine_ids[] }
@@ -95,7 +105,7 @@ sequenceDiagram
       G-->>E: candidates[0].content.parts[0].text（JSON文字列）
       E->>E: ⑨ JSON パース → zod 検証 → 幻覚フィルタ（§4 L4）
       E-->>F: 200 { menus:[{ name, how_to }] }
-      F->>U: ListView にメニュー案を表示（採用は利用者操作＝FEAT-01/FEAT-04 へ）
+      F->>U: ListView にメニュー案を表示（保存しない。［登録］した1件だけ FEAT-01 へ）
     else 失敗（abort＝504／Gemini API 403・429・不達／出力不正・除去後0件）
       E-->>F: ERR-AI-TIMEOUT / ERR-AI-CREDIT / ERR-AI-RATE / ERR-AI-FAIL / ERR-MENU-004 / ERR-MENU-005
       F->>U: SnackBar で通知（記録・閲覧は継続・NFR-AVAIL-05）
@@ -108,6 +118,8 @@ sequenceDiagram
 | トランザクションを張らない | 書き込みが無い。EXT-01 呼び出しは DB 接続を保持したまま行わない |
 | ⑥ を ⑧ より先に置く | 無効な入力で課金しないため。AI 呼び出しは検証を全通過後に1回だけ |
 | ① を Edge Function に通さない | 器具の絞り込みは決定的処理（RULE-004）。AI も Function も要らない |
+| ① が0件なら②を発行しない | AI に渡す情報が無い。呼んでも課金だけが発生する（FEAT-02 §10 #1） |
+| 応答を保存しない | 提案は画面の状態にすぎない。採用した1件だけが永続化の対象になる |
 
 エラーの分岐条件と ERR 対応は §6 が詳細。
 
@@ -151,8 +163,11 @@ sequenceDiagram
 ```
 
 - Dart 側に zod は無い。`AiMenu` モデルクラス＋`fromJson` で検証する。
+- **応答に ID は無い。** Edge Function が保存しないため、提案を指す永続的な識別子が存在しない。
+- 提案は Flutter の画面状態としてのみ保持する。画面を離れると消える（§7）。
 - 旧契約 `POST /api/menus/generate`（段3 `02_API設計.md §4.2`）は**廃止**。Edge Function `generate-menu` に置き換わる。
 - 段3の契約表の改訂が要る（§10 #12）。
+- 前段（FEAT-02）で器具が0件のとき、この呼び出しは発行されない（§1・§7）。
 
 ### 3.2 Edge Function → Gemini API（EXT-01・実装仕様）
 
@@ -333,7 +348,7 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | service role を避ける理由 | service role は RLS を素通りする |
 | 重なるとどうなるか | RLS を素通りすると、他人の `training_menus` と `machine_menus` まで読める。`training_machines` は共通マスタで誰でも読めるため、絞り込みが一切効かなくなる |
 | 対象テーブル | `training_machines`／`machine_menus`／`training_menus`（いずれも SELECT のみ） |
-| 書き込み | **INSERT/UPDATE/DELETE は行わない** |
+| 書き込み | **INSERT/UPDATE/DELETE は行わない**。提案を保存しないため（§10 #1） |
 | 使用INDEX | `training_menus` は PK と `user_id`・`body_part` の絞り込み |
 | 使用INDEX | `machine_menus` は `uq_mm_machine_menu`（`machine_id, menu_id`）と `ix_mm_menu`（`menu_id`） |
 | INDEX の正本 | `../01_DB物理設計.md §3` |
@@ -343,8 +358,10 @@ Edge Function 内では上記2本を PostgREST 経由の埋め込み select と�
 | 本人性の担保 | **`training_menus` の RLS が担保点。** JOIN 条件だけに頼らない（§10 #8） |
 | 多対多化の影響 | 経路が1段深くなった。`machine_menus` のポリシーも担保点に加わる |
 | トランザクション境界 | なし（参照のみ）。EXT-01 呼び出しは DB 接続を保持したまま行わない |
-| 永続化 | 提案結果は保存しない `[仮]`（§10 #1） |
+| 永続化 | **提案結果は保存しない**（2026-08-08 決定・§10 #1） |
+| 提案履歴のテーブル | **作らない。** 画面を離れると提案は消える |
 | 採用時の委譲先 | FEAT-01（`training_menus` への PostgREST insert）／FEAT-04（RPC `create_training_session`） |
+| 採用の単位 | 利用者が［登録］した1件ずつ。一括保存は行わない |
 
 - (1) の `$2` は `auth.uid()`（uuid）。RLS が同じ条件を強制するため、JOIN 条件は二重防御になる。
 
@@ -389,16 +406,28 @@ Flutter ウィジェットで記述する。
 
 | 状態 | 表示 | 操作可否 |
 |---|---|---|
-| 初期/空（部位未選択） | `SegmentedButton`（Material 3）で部位5種のみ表示。提案領域は非表示 | ［メニュー生成］は `onPressed: null` |
-| 器具0件（部位選択済・該当器具なし） | `MaterialBanner`（黄系）で器具未登録を案内し、SCR-02 器具登録への導線を出す `[仮]` | ［メニュー生成］は `onPressed: null`（無駄な課金を防ぐ） |
+| 初期/空（部位未選択） | ジム選択（FEAT-02 §7）＋ `SegmentedButton`（Material 3）で部位5種。提案領域は非表示 | ［メニュー生成］は `onPressed: null` |
+| 器具0件（部位選択済・該当器具なし） | `MaterialBanner`（黄系）で器具未登録を案内し、SCR-02 器具登録への導線を出す | **［メニュー生成］は `onPressed: null`**（2026-08-08 決定・無駄な課金を防ぐ） |
 | 器具選択済 | `Wrap` に `FilterChip` を並べ複数選択。選択数を表示 | ［メニュー生成］有効 |
 | 読込中 | ボタン内を `CircularProgressIndicator`（サイズ固定）に差し替え、提案領域中央にも `CircularProgressIndicator`。最長15秒（NFR-PERF-03） | ボタンは `onPressed: null`（二重送信＝二重課金の抑止） |
-| 成功 | `ListView.builder` ＋ `ExpansionTile`（`name` をタイトル、`how_to` を展開内容）。件数が MENU_MAX 未満でもそのまま表示 | 各行に［種目マスタに追加］（FEAT-01）／［今日の記録に追加］（FEAT-04）`[仮]`。［再生成］は課金する旨を添える |
+| 成功 | `ListView.builder` ＋ `ExpansionTile`（`name` をタイトル、`how_to` を展開内容）。件数が MENU_MAX 未満でもそのまま表示 | 各行に［登録］（FEAT-01 C-06）／［今日の記録に追加］（FEAT-04）。［再生成］は課金する旨を添える |
 | エラー | `ScaffoldMessenger.showSnackBar`（赤系・`message` は §6 の利用者向けメッセージ）。提案領域は直前の状態を保持 | 再試行可否は `retryable` に従う。器具選択・記録操作は継続可（NFR-AVAIL-05） |
 | レート上限 | `ScaffoldMessenger.showSnackBar`（橙系）で時間をおく旨 | ［メニュー生成］を一定時間 `onPressed: null` |
 
 - 進捗率は出せない（Edge Function がストリームを返さないため）。`CircularProgressIndicator` は不定形（`value: null`）で使う。
 - 画面遷移は起こさない。SCR-03 内で完結する。
+
+### 提案の寿命
+
+| 事項 | 内容 |
+|---|---|
+| 保持場所 | `MenuGeneratePanel` の `State` のみ。DB にも端末にも保存しない |
+| 消えるとき | 画面を離れたとき・再生成したとき |
+| 残るもの | 利用者が［登録］した種目だけ（`training_menus` の1行） |
+| 復元 | できない。同じ提案を得るには再生成＝再課金になる |
+
+- ［登録］は行ごとに1回。押した行にはチェックを表示し、二重登録を防ぐ `[仮]`。
+- 未登録の提案が残ったまま画面を離れるとき、確認を出すかは `[仮]`。
 
 ## 8. 実装単位
 | # | ファイル | 役割 | 主なシグネチャ |
@@ -411,7 +440,7 @@ Flutter ウィジェットで記述する。
 | 6 | `supabase/functions/_shared/rate-limit.ts` | AI呼び出しの回数制限・多重実行抑止（NFR-SEC-05・§10 #4） | `export async function consumeAiQuota(userId: string, feature: string): Promise<QuotaResult>` |
 | 7 | `supabase/functions/_shared/supabase-client.ts` | 呼び出し元 JWT を引き継いだクライアント生成（§5） | `export function createUserClient(req: Request): SupabaseClient` |
 | 8 | `app/lib/features/training/menu_generate_panel.dart` | SCR-03 の生成パネル（§7 の状態遷移） | `class MenuGeneratePanel extends StatefulWidget` |
-| 9 | `app/lib/features/training/ai_menu.dart` | 応答のモデルクラス（Dart 側の検証） | `class AiMenu { factory AiMenu.fromJson(Map<String, dynamic> json); }` |
+| 9 | `app/lib/features/training/ai_menu.dart` | 応答のモデルクラス（Dart 側の検証）。**永続化しない画面状態**（§7） | `class AiMenu { factory AiMenu.fromJson(Map<String, dynamic> json); }` |
 | 10 | `app/lib/data/menu_repository.dart` | `functions.invoke('generate-menu')` の呼び出しと `FunctionException` の写像 | `Future<List<AiMenu>> generateMenu({required BodyPart bodyPart, required List<int> machineIds})` |
 
 ## 9. テスト観点
@@ -434,6 +463,10 @@ Flutter ウィジェットで記述する。
 | TC-FEAT03-15 | 複数部位に対応する器具（指定部位の種目と他部位の種目を併せ持つ） | 200。プロンプト素材の `menu_names` は**指定部位の種目のみ**を含む |
 | TC-FEAT03-16 | 1台が同一部位の種目を複数持つ | 器具は重複せず1件として扱われる（`DISTINCT machine_id` で畳む・§5） |
 | TC-FEAT03-17 | 対応種目が0件の器具を指定 | 400・ERR-MENU-001・EXT-01 を呼ばない |
+| TC-FEAT03-18 | 前段の器具が0件 | ［メニュー生成］が非活性。`functions.invoke` が発行されない（FEAT-02 §10 #1） |
+| TC-FEAT03-19 | 提案を保存しない | 200 の後も `training_menus` の行数が増えない。提案履歴のテーブルも参照しない |
+| TC-FEAT03-20 | 提案から［登録］ | 押した1件だけが `training_menus` に INSERT される。他の提案は保存されない |
+| TC-FEAT03-21 | 画面を離れる | 再表示しても提案は残らない。復元の経路が無い |
 
 受入基準（G/W/T）の候補:
 - [AC] Given 部位「胸」に対応する器具が登録済み When 器具を選んで［メニュー生成］を押す Then 15秒以内にメニュー案が1件以上表示される
@@ -442,16 +475,21 @@ Flutter ウィジェットで記述する。
 - [AC] Given 1台で複数部位に対応する器具を選んでいる When 部位「胸」で生成を要求する Then 胸の種目だけを素材にメニュー案が生成される
 - [AC] Given Gemini API が不達 When 生成を要求する Then エラーが通知されるが、トレーニング記録と閲覧は継続して行える
 - [AC] Given メニュー案が表示された When 何も採用操作をしない Then 種目マスタには何も追加されない
+- [AC] Given メニュー案が表示された When 1件だけ［登録］を押す Then その1件だけが種目マスタに追加される
+- [AC] Given メニュー案が表示された When 画面を離れて戻る Then 提案は残っていない
 
 > 受入基準・ST・ERR の**正本は段6**（`../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`・本PR対象外）。本節はその母集合への入力。
 
 ## 10. 敵対的検証・要確認事項
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
-| 1 | 提案メニューの保存先が未定義 | §4.2（`02_API設計.md`）に保存先の定義が無い。種目マスタ `training_menus` にそのまま INSERT すると同名重複・マスタ汚染・FEAT-02/FEAT-05 へ波及する。保存せず採用は利用者操作`[仮]` | 🔴 高 |
+| 1 | ~~提案メニューの保存先が未定義~~（**解決**） | **2026-08-08 決定。保存しない。** Edge Function は応答を返すだけで、DB に書かない（§5） | — |
+| 〃 | 〃 | 画面に一覧を出し、利用者が［登録］した1件だけ `training_menus` に INSERT する（§7・FEAT-01 C-06） | — |
+| 〃 | 〃 | **提案履歴のテーブルは作らない。** 画面を離れると提案は消える。マスタ汚染は採用操作を挟むことで避ける | — |
 | 2 | AI に渡す情報の粒度 | `machine_menus` から種目名を逆引きできるため、「部位＋器具名＋既存種目名」を渡すと既知種目の再掲になりやすい。多対多化で1器具あたりの種目名が増え傾向は強まる。渡す粒度で出力の性格が変わるが FEAT-03 の狙いが未定義 | 🟡 中 |
 | 3 | 幻覚の残存 | zod と `responseSchema` は型・件数しか保証せず、存在しない器具のメニューを防げない。事後フィルタ（§4 L4）は`[仮]`。`how_to` 本文中の別器具言及は検出できず目視評価が要る | 🔴 高 |
 | 4 | 生成のたびに課金される／カウンタの置き場所が無い | 同一入力でも毎回課金。抑止策は §4 L5 のキャッシュと回数上限だが、**旧構成の Vercel Firewall は使えず** KV/Redis も無い。カウンタ用テーブル `ai_usage_counters` `[仮]` が要る | 🔴 高 |
+| 〃 | 〃 | 器具0件時の非活性（FEAT-02 §10 #1）と、提案を保存しないこと（#1）は抑止にならない。再表示のたびに再生成＝再課金になる | 〃 |
 | 5 | タイムアウトと Edge Function 実行時間上限の関係 | NFR-PERF-03 の15秒は UX 目標で、**Edge Function 自体の実行時間上限**は別に存在し未確認`[仮]`。15秒未満なら設計が成立せず確定前に実測が要る。中断してもトークンは消費済みのことがある | 🔴 高 |
 | 6 | 単一プロバイダ依存・フォールバック手段が無い | 直接呼び出しで**モデル自動切替が無くなり**、旧構成のフォールバックは失われた。自前の切替は二重課金・レイテンシ倍増の risk があり採らない。障害＝FEAT-03 全停止のため SCR-03 に手動記録の経路を残す | 🔴 高 |
 | 7 | 構造化出力の失敗が共通エラー契約に無い | `responseSchema` 不適合・JSON 破損に対応する ERR も HTTP も共通契約に無い。再試行しても同じ結果になりやすく既存4種と性質が違う。本書は `ERR-MENU-004` を`[仮]`採用したが追加が要る | 🟡 中 |
@@ -467,7 +505,10 @@ Flutter ウィジェットで記述する。
 | 16 | `machine_menus` に `user_id` が無い | 中間テーブルも `user_id` を持たず、本人性は親（`training_menus`）を辿ってしか担保できない | 🟡 中 |
 | 〃 | 〃 | #8 の弱点が1段深くなった。JOIN を1つ落とすと他人の器具が混ざる。RLS は親経由（`menu_id` の所有者が本人）で確定した（ADR-0005） | 〃 |
 
-> ⚠️ 要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング（保存しない／採用時のみ `training_menus` へ／別テーブルを設ける）。別テーブル案は新規テーブル追加になるため本書では採らない。
+> ~~要確認（人間判断）: #1 AI提案メニューの保存先と保存タイミング。~~（**解決**・2026-08-08）
+> - **保存しない。** Edge Function は応答を返すだけである。
+> - 採用時のみ `training_menus` に INSERT する（利用者が［登録］した1件だけ）。
+> - 別テーブル（提案履歴）は作らない。
 > ⚠️ 要確認（人間判断）: #2 AI に渡す入力の粒度と、FEAT-03 が提供する価値の定義（新種目の発見か、既知種目の `how_to` 生成か）。
 > ⚠️ 要確認（人間判断）: #4 レート制限（NFR-SEC-05）の閾値・集計単位（時間/日）、カウンタ用テーブルの採否とスキーマ、および同一入力キャッシュの採否と TTL。
 > ⚠️ 要確認（人間判断）: #5 Supabase Edge Function の実行時間上限（実値）と、`AI_MENU_TIMEOUT_MS` の確定値（本書は 13000ms `[仮]`）。上限が15秒未満なら NFR-PERF-03 の再定義が要る。

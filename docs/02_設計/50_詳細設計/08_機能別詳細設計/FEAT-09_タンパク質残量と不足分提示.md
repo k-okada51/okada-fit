@@ -46,6 +46,10 @@ status: draft
 | `remaining_g` 残量 | RULE-002（必要量−摂取量・0でクランプ） |
 | `suggestions` 候補 | `foods`（FEAT-10 が CSV で投入）からの決定的抽出 |
 
+- `foods.protein_amount` は**1食分あたり**のタンパク質量（ADR-0012）。残量と直接比較できる。
+- `intake_g` は当日の `SUM(protein_g)`。係数を掛ける列は `meal_logs` に無い（ADR-0013）。
+- 「当日」は**端末のタイムゾーン**で決める（ADR-0014）。Flutter が日付を決めて RPC に渡す。
+
 - AI（EXT-01）は呼ばない。Edge Function も使わない。
 - したがって NFR-AVAIL-05 の AI 縮退時も本機能は通常どおり動作する。
 - 旧設計は Route Handler `GET /api/protein/remaining` だった。RPC 1本に置き換える（§10 #11・末尾の要確認）。
@@ -61,7 +65,7 @@ sequenceDiagram
   participant R as Supabase<br/>RPC get_protein_remaining
 
   U->>F: SCR-01 を開く / SCR-04 で食事を記録した直後
-  F->>F: 集計対象日を決める（JST基準の当日・todayInJst）[仮]
+  F->>F: 集計対象日を決める（端末TZの当日・todayOnDevice・ADR-0014）
   F->>R: supabase.rpc('get_protein_remaining', {p_target_date, p_limit})
   R->>R: auth.uid() を解決（NULL・JWT不正 → 401 ERR-AUTH-001）
   R->>R: users.weight_kg ＋ 当日 meal_logs.protein_g 合計を1文で取得（RLS適用）
@@ -107,7 +111,7 @@ sequenceDiagram
 
 | 引数 | 型 | 必須 | 既定 | 説明 |
 |---|---|---|---|---|
-| `p_target_date` | `date` | yes | — | 集計対象日。JST基準の当日を Flutter が決めて渡す `[仮]`（§10 #3） |
+| `p_target_date` | `date` | yes | — | 集計対象日。**端末TZの当日**を Flutter が決めて渡す（ADR-0014・§10 #3） |
 | `p_limit` | `int` | no | `3` | 提示件数 N `[仮]`（§4.1 L4）。既定値は関数定義側に持たせ、呼び出し側で重複定義しない |
 
 ```jsonc
@@ -117,7 +121,7 @@ sequenceDiagram
   "intake_g":    "float(>=0)",   // 当日の meal_logs.protein_g 合計
   "remaining_g": "float(>=0)",   // RULE-002。0でクランプ（負値を返さない）
   "suggestions": [               // RULE-005。foods からの決定的抽出（AI不使用）
-    { "food_name": "string", "protein_amount": "float(>0)" }
+    { "food_name": "string", "protein_amount": "float(>0)" }   // 1食分あたりのg（ADR-0012）
   ]
 }
 ```
@@ -153,14 +157,17 @@ sequenceDiagram
 
 | # | ロジック | 規則 | 実装場所 |
 |---|---|---|---|
-| L1 | 集計対象日の決定 | JST（Asia/Tokyo）の当日 `[仮]` | Flutter `todayInJst()` → `p_target_date`（§10 #3） |
-| L2 | 摂取量合計 | 当日の `meal_logs.protein_g` の SUM。0件は 0 | RPC 内（§5） |
-| L2 | 摂取量の係数 | `intake_count` は**乗じない** `[仮]` | 同上 |
+| L1 | 集計対象日の決定 | **端末のタイムゾーンの当日**（ADR-0014） | Flutter `todayOnDevice()` → `p_target_date` |
+| L1 | サーバ時刻 | 使わない。RPC 内で `CURRENT_DATE` を呼ばない（Supabase は UTC） | 同上 |
+| L2 | 摂取量合計 | 当日の `SUM(meal_logs.protein_g)`。0件は 0 | RPC 内（§5） |
+| L2 | 摂取量の係数 | **係数を掛けない。** 個数を持つ列は `meal_logs` に存在しない（ADR-0013） | 同上 |
 | L3 | 残量 | `remaining_g = max(0, target_g − intake_g)` | RPC 内（RULE-002） |
 | L3 | 0クランプ | 過剰摂取（`intake_g > target_g`）でも 0。負値・超過量は返さない | 同上 |
 | L3 | 超過量 | 要るなら `intake_g − target_g` を Flutter 側で算出できる | 同上 |
 | L3 | 列の追加 | しない。応答に `target_g` と `intake_g` の両方が含まれるため | 同上 |
 | L4 | 抽出しない条件 | `remaining_g <= 0`（達成済み）なら抽出せず空配列を返す | RPC 内（RULE-005） |
+| L4 | `protein_amount` の意味 | **1食分あたり**のタンパク質量（ADR-0012）。100g あたり・1個あたりではない | 同上 |
+| L4 | 残量との比較 | 1食分あたりのため `remaining_g` と同じ尺度。換算せずそのまま差を取れる | 同上 |
 | L4 | 候補の母集合 | `foods` のうち `protein_amount > 0` の行。0g の行は候補にしない | 同上 |
 | L4 | 並び① | `abs(protein_amount − remaining_raw)` 昇順（残量との差が小さい順） | 同上 |
 | L4 | 並び② | `protein_amount` 降順（同差なら量の多い方を優先） | 同上 |
@@ -248,7 +255,7 @@ remaining_g   = round(remaining_raw::numeric, 1)
 ```sql
 -- supabase/migrations/*.sql に置く（`../04_移行設計.md` の版管理対象）
 create or replace function public.get_protein_remaining(
-  p_target_date date,
+  p_target_date date,                  -- 端末TZの当日を Flutter が渡す（ADR-0014）
   p_limit       int default 3          -- 提示件数 N [仮]
 )
 returns jsonb
@@ -266,6 +273,8 @@ declare
 begin
   -- 旧 Q1 に相当: 体重＋当日のタンパク質摂取合計を1文で取得
   --   users.id・meal_logs.user_id は uuid で auth.uid() と同値（案A・ADR-0005）。直接比較で書ける。
+  --   対象日は p_target_date のみで絞る。CURRENT_DATE は使わない（ADR-0014）。
+  --   合計は protein_g の単純 SUM。係数を掛ける列は持たない（ADR-0013）。
   select u.weight_kg, coalesce(sum(m.protein_g), 0)
     into v_weight, v_intake
     from users u
@@ -364,7 +373,7 @@ RPC のため HTTP ステータスは PostgREST が決める。
 // app/lib/data/protein_repository.dart（写像の骨子・[仮]）
 try {
   final json = await supabase.rpc('get_protein_remaining', params: {
-    'p_target_date': todayInJst(),
+    'p_target_date': todayOnDevice(),   // 端末TZの当日（ADR-0014）
   });
   return ProteinRemaining.fromJson(json as Map<String, dynamic>);
 } on PostgrestException catch (e) {
@@ -427,8 +436,8 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | 3 | `app/lib/features/dashboard/protein_remaining.dart` | 応答のモデルクラス。`fromJson` で型付けする（Dart のため zod は使わない） | `class ProteinRemaining` ／ `class ProteinSuggestion` |
 | 3 | 同上 | 同上 | `factory ProteinRemaining.fromJson(Map<String, dynamic> json)` |
 | 4 | `app/lib/features/dashboard/protein_remaining_card.dart` | SCR-01 / SCR-04 共用の表示。状態別表示（§7）を担う | `class ProteinRemainingCard extends StatelessWidget` |
-| 5 | `app/lib/domain/date.dart` | 集計対象日（JST基準の当日）の算出。FEAT-05・FEAT-08 と共用する | `String todayInJst([DateTime? now])` |
-| 5 | 同上 | 配置の正本は `../07_実装共通設計パターン.md` に置くべき（§10 #3） | 同上 |
+| 5 | `app/lib/domain/date.dart` | 集計対象日（端末TZの当日）の算出。FEAT-05・FEAT-08 と共用する（ADR-0014） | `String todayOnDevice([DateTime? now])` |
+| 5 | 同上 | 配置の正本は `../07_実装共通設計パターン.md` に置くべき | 同上 |
 | 6 | `app/lib/domain/nutrition.dart` | FEAT-07 の正本。本機能では**新規作成も変更もしない**（RULE-001 の算出は RPC 側に写した・§10 #12） | 既存 |
 
 ## 9. テスト観点
@@ -446,7 +455,7 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | TC-FEAT09-09 | 残量より多い食品と少ない食品が混在 | SQL | 差の絶対値昇順で並ぶ。同差なら多い方が先 |
 | TC-FEAT09-10 | `protein_amount` が同値の行が複数 | SQL | `id` 昇順で順序が一意に決まる（実行ごとに変わらない） |
 | TC-FEAT09-11 | `protein_amount` = 0 の行が存在 | SQL | 候補に含まれない |
-| TC-FEAT09-12 | 日付境界（JST の 0時前後・UTCでは前日） | Dart | `todayInJst()` が JST の当日を返し、その日で集計される |
+| TC-FEAT09-12 | 日付境界（端末TZの 0時前後・UTCでは前日） | Dart | `todayOnDevice()` が端末TZの当日を返し、その日で集計される |
 | TC-FEAT09-13 | 丸め | SQL | 戻り値の各数値が小数第1位。`remaining_g` は丸め前の差を丸めた値 |
 | TC-FEAT09-14 | RPC 実行失敗 | Dart | ERR-PROTEIN-001・retryable=true に写像される |
 | TC-FEAT09-15 | 応答時間 | SQL | 代表データで ≤1秒（NFR-PERF-02） |
@@ -468,9 +477,9 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 | # | 論点 | 内容 | 重大度 |
 |---|---|---|---|
 | 1 | ~~`foods` に `user_id` が無く RLS の設計が他表と異なる~~（**解決**） | ~~共通マスタか私有データ（FEAT-10）かが未定義~~ → **共通マスタで確定**（2026-08-08・ADR-0005）。所有者列は持たない。RLS は3区分の「共通マスタ」＝`TO authenticated USING (true)`（§5.2） | — |
-| 2 | `foods.protein_amount` の**単位が未定義** | 物理設計は「タンパク質量(g)」としか定義せず、1食分／100g／1個のどれかが未定。残量との差で並べる抽出（RULE-005）が意味を成さない。CSV 列設計（FEAT-10）・分量列の要否と併せて確定が要るが、本書は指摘に留める | 🔴 高 |
-| 3 | 「当日」の定義とタイムゾーン（FEAT-05・FEAT-08 と共通） | `eaten_date` の基準 TZ が未定義。UTC の `current_date` だと JST 0〜9時の記録が前日に入り残量が過大になる。本書は Flutter が JST 当日を渡す `[仮]` | 🟡 中 |
-| 4 | `meal_logs.intake_count` を SUM に掛けるべきか不明 | `01_データモデル.md §8-6` の未解決。「何人前」なら `SUM(protein_g * intake_count)`、「便宜上の個数」なら掛けない。本書は**掛けない** `[仮]`（FEAT-08 と対） | 🔴 高 |
+| 2 | ~~`foods.protein_amount` の**単位が未定義**~~（**解決**） | ~~1食分／100g／1個のどれかが未定で、残量との差で並べる抽出（RULE-005）が意味を成さない~~ → **1食分あたりで確定**（ADR-0012・2026-08-08）。「これを食べれば X g 取れる」という数値で、残量と直接比較できる。1食分の分量は CSV 作成者が決める（FEAT-10） | — |
+| 3 | ~~「当日」の定義とタイムゾーン（FEAT-05・FEAT-08 と共通）~~（**解決**） | ~~`eaten_date` の基準 TZ が未定義。UTC の `current_date` だと JST 0〜9時の記録が前日に入り残量が過大になる~~ → **端末時刻で確定**（ADR-0014・2026-08-08）。Flutter が端末TZで日付を決め `p_target_date` に渡す。RPC 内で `CURRENT_DATE` を使わない | — |
+| 4 | ~~摂取数を SUM に掛けるべきか不明~~（**解決**） | ~~「何人前」なら乗じ、「便宜上の個数」なら掛けない~~ → **列を削除した**（ADR-0013・2026-08-08）。合計は導出値であり列で持つとずれるため。摂取量合計は `SUM(protein_g)` で確定し、係数の論点は消滅した（FEAT-08 §10-2 と対） | — |
 | 5 | `weight_kg` 未設定時の応答形式 | ERR-PROFILE-020（409 `[仮]`）へ写像する方針。409 を前提条件未充足に使うのは一般的用法とずれ、`target_g: null` を返す案もある。**SCR-01 は初回に必ず通る経路**のため UX に直結する | 🟡 中 |
 | 6 | `foods` が空のときの `suggestions` | 本書は空配列＋画面導線とした。FEAT-10 の CSV 取込を行うまで RULE-005 の価値が一切出ない。初期データを同梱するか、取込を FEAT-06 の必須ステップにするかが未定義 | 🟢 低 |
 | 7 | 提示アルゴリズムの妥当性（単品N件・N=3） | 実装は単純で決定的。ただし残量が大きい日は単品では補えず、提示が実用的でなくなる。組み合わせ提案や上限フィルタ（残量を大きく超える食品を除く）の要否は業務判断で、N=3 も含めて `[仮]` | 🟡 中 |
@@ -496,17 +505,21 @@ SCR-04 では食事記録の保存成功後に RPC を呼び直して表示を�
 > ⚠️ 要確認（人間判断）: 候補抽出を RPC 内の `ORDER BY` / `LIMIT` で行う方針（§5.1 の (a)）を承認するか。
 > 承認する場合、`../07_実装共通設計パターン.md` の「RPC には永続化だけを置く」方針に集計系 RPC の例外を明記すること（#11）。
 
-> ⚠️ 要確認（人間判断）: `foods.protein_amount` の単位（1食分／100g／1個）を FEAT-10 の CSV 列設計とセットで確定すること。
-> 決まらないと RULE-005 の提示は数値としての意味を持たない（#2）。**本件は未解決のまま残る。**
+> ~~⚠️ 要確認（人間判断）: `foods.protein_amount` の単位（1食分／100g／1個）を FEAT-10 の CSV 列設計とセットで確定すること。~~（**解決**・2026-08-08）
+> ~~決まらないと RULE-005 の提示は数値としての意味を持たない（#2）。**本件は未解決のまま残る。**~~
+> **1食分あたりで確定**（ADR-0012）。残量と直接比較できる数値です。
+> 1食分の分量は CSV 作成者が決めます（FEAT-10）。
 
 > ~~⚠️ 要確認（人間判断）: `foods` は全ユーザー共通マスタか本人の私有データか。私有なら `foods.user_id` の追加＝スキーマ変更が必要（#1）。~~（**解決**・2026-08-08）
 > **共通マスタで確定**（ADR-0005）。`foods` に所有者列を追加しない。RLS は「共通マスタ」区分（§5.2）。
 > 残る懸念は Phase2 での書き込み分離のみ（#13）。
 
-> ⚠️ 要確認（人間判断）: `intake_g` の算出前提を確定すること。どちらも値が変われば残量・提示候補がすべて変わる。
-> (a) `meal_logs.intake_count` を乗じるか（`01_データモデル.md §8-6` の未解決・#4）。
-> (b) 「当日」の判定を Flutter が渡す `p_target_date` に委ねるか RPC 内で JST 固定にするか（#3）。
-> (b) は FEAT-05・FEAT-08 と共通の横断方針として `../07_実装共通設計パターン.md` に1か所で定めるべき。
+> ~~⚠️ 要確認（人間判断）: `intake_g` の算出前提を確定すること。どちらも値が変われば残量・提示候補がすべて変わる。~~（**解決**・2026-08-08）
+> ~~(a) `meal_logs` の摂取数を乗じるか（#4）。~~
+> ~~(b) 「当日」の判定を Flutter が渡す `p_target_date` に委ねるか RPC 内で JST 固定にするか（#3）。~~
+> (a) は**列を削除**して決着しました（ADR-0013）。合計は `SUM(protein_g)` です。
+> (b) は**端末TZで確定**（ADR-0014）。Flutter が `p_target_date` を決めて渡します。
+> 横断方針として `../07_実装共通設計パターン.md` に1か所で定める作業は残ります（FEAT-05・FEAT-08 と共通）。
 
 > ⚠️ 要確認（人間判断）: 提示件数 N＝3 と単品N件方式（組み合わせ提案なし）でよいか（#7）。
 > あわせて `weight_kg` 未設定時をエラー（ERR-PROFILE-020）とするか正常応答で返すかを決めてください（#5）。

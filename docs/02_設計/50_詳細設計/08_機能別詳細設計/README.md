@@ -14,6 +14,15 @@ status: draft
 > ADR-0001 は `Superseded by ADR-0011`、ADR-0002 は `Superseded by ADR-0010`。
 > `../../30_データ・IF設計/02_API設計.md` も PostgREST／RPC／Edge Function へ改訂済み。
 
+> **2026-08-08 の業務判断で ADR-0012〜0015 を起票した**（いずれも Accepted・岡田さん決定）。
+
+| ADR | 決めたこと | 主に効く機能 |
+|---|---|---|
+| ADR-0012 | `foods.protein_amount` は**1食分あたり**のタンパク質量(g) | FEAT-09 / FEAT-10 |
+| ADR-0013 | 摂取量の合計は**導出値**。`meal_logs` に合計用の列を持たない | FEAT-05 / FEAT-08 / FEAT-09 |
+| ADR-0014 | **「当日」は端末の時刻で判定する**（下記「日付の基準」） | FEAT-05 / FEAT-08 / FEAT-09 |
+| ADR-0015 | AI の推定値は**手修正しない**。失敗した食事は記録しない | FEAT-03 / FEAT-08 |
+
 ## 構成
 
 ```
@@ -63,7 +72,7 @@ Supabase
 | FEAT-02 | 部位選択と器具の絞り込み | [FEAT-02_部位選択と器具絞り込み.md](FEAT-02_部位選択と器具絞り込み.md) | PostgREST（埋め込み select・`DISTINCT`） | — | SCR-02 / SCR-03 |
 | FEAT-03 | AIメニュー提案 | [FEAT-03_AIメニュー提案.md](FEAT-03_AIメニュー提案.md) | Edge Function `generate-menu` | **EXT-01** | SCR-03 |
 | FEAT-04 | トレーニング記録 | [FEAT-04_トレーニング記録.md](FEAT-04_トレーニング記録.md) | RPC `create_training_session`＋PostgREST | — | SCR-03 |
-| FEAT-05 | ダッシュボード表示 | [FEAT-05_ダッシュボード.md](FEAT-05_ダッシュボード.md) | RPC `get_dashboard` | — | SCR-01 |
+| FEAT-05 | ダッシュボード表示（当日のゲージ＋今月の目標トレーニング回数の達成状況＋ヒートマップ） | [FEAT-05_ダッシュボード.md](FEAT-05_ダッシュボード.md) | RPC `get_dashboard` | — | SCR-01 |
 | FEAT-06 | 初期設定（体重・目標） | [FEAT-06_初期設定.md](FEAT-06_初期設定.md) | PostgREST `users` | — | SCR-05 |
 | FEAT-07 | 必要タンパク質量の算出 | [FEAT-07_必要タンパク質量算出.md](FEAT-07_必要タンパク質量算出.md) | 専用APIなし（共有ロジック） | — | SCR-01 / SCR-05 |
 | FEAT-08 | 食事撮影・タンパク質計算 | [FEAT-08_食事撮影タンパク質計算.md](FEAT-08_食事撮影タンパク質計算.md) | Edge Function `analyze-meal` → PostgREST | **EXT-01** | SCR-04 |
@@ -111,6 +120,13 @@ Supabase
 ### 状態
 - 永続する状態は `training_session_details.is_done` **のみ**（ST-01 未実行 / ST-02 実行済）。
 - 他機能は状態を持たない。一過性の記録イベントとして扱う（`../../30_データ・IF設計/03_ドメインイベント.md`）。
+
+### 日付の基準
+- 「当日」は**端末の時刻**で判定する（2026-08-08 確定・ADR-0014）。
+- 日付は Flutter が決めて **RPC の引数で渡す**。RPC 内で `CURRENT_DATE` を使わない。
+- Supabase は UTC のため、サーバ側で決めると日本時間の朝9時までが前日に入る。
+- 対象は `meal_logs.eaten_date` の採番／残量のリセット／ヒートマップと「今月」の範囲。
+- 該当するのは FEAT-05・FEAT-08・FEAT-09。横断方針の正本は `../07_実装共通設計パターン.md` §2。
 
 ### 認証・分離
 - 全経路で Supabase Auth の認証が要る。DB側は RLS が一次防御（ADR-0004）。

@@ -49,6 +49,7 @@ FEAT-01 は、岡田さんが通うジムの器具（マシン）を DB に登�
 
 ここで作られたデータは FEAT-02（部位→器具の絞り込み）と FEAT-03（AIメニュー提案）の入力になる。
 本機能は FEAT-02/03 の唯一のデータ供給源であり、両者の前提となる。
+逆向きの経路も1つある。FEAT-03 の提案から［登録］された種目も本機能が作る（§3.3）。
 
 ### 1.2 器具と種目は多対多
 
@@ -188,7 +189,7 @@ sequenceDiagram
 | # | 操作 | 呼び出し | 戻り値 | 主なERR |
 |---|---|---|---|---|
 | C-01 | 1件登録（種目を1件以上紐づけ） | `rpc('create_machine', {p_gym_id, p_name, p_menu_ids})` | 採番された `machine_id` | 001〜005/007/016 |
-| C-02 | 一覧（種目・部位を導出して同梱） | `from('training_machines').select(EMB)` ＋ `.eq()` | 器具の配列 | — |
+| C-02 | 一覧（種目・部位を導出して同梱） | `from('training_machines').select(EMB)` ＋ `.eq()`（`gym_id` / 部位） | 器具の配列 | — |
 | C-03 | 紐づけ差し替え・改名 | `rpc('update_machine', {p_machine_id, p_gym_id, p_name, p_menu_ids})` | `machine_id`（不在は `null`） | 001〜007/016 |
 | C-04 | 削除（紐づけごと） | `rpc('delete_machine', {p_machine_id})` | `machine_id`（不在は `null`） | 006 |
 | C-11 | 1件の再取得（登録・更新の直後） | `from('training_machines').select(EMB).eq('id',id).single()` | 器具1件 | 006 |
@@ -270,20 +271,22 @@ const EMB = 'id, name, created_at, '
 | — | 器具の種目は常に配列である |
 
 ```dart
-// C-02 一覧（フィルタは任意）
+// C-02 一覧（ジムで絞り、部位はさらに任意で絞る）
 var q = supabase.from('training_machines').select(EMB);
-if (gymId != null)    q = q.eq('gym_id', gymId);
+if (gymId != null)    q = q.eq('gym_id', gymId);                                    // ジム絞り込み（§7.3）
 if (bodyPart != null) q = q.eq('machine_menus.training_menus.body_part', bodyPart); // 埋め込み列での絞り込み
 final rows = await q;   // 並び替えは §5 参照
 ```
 
 | 事項 | 内容 |
 |---|---|
+| `gym_id` の絞り込み | **2026-08-08 決定でジムを選んで絞る**（FEAT-02 §7）。親テーブルの列なので `!inner` は要らない |
+| ジムが1件のとき | 選択UIを出さず `gymId` を渡さない `[仮]`。結果は同じになる |
 | 埋め込み列での絞り込み | 経路上の全段に `!inner` が要る（`machine_menus!inner` ＋ `training_menus!inner`） |
 | 外部結合のままだと | 親行が残る |
 | 部位で絞ったとき | 器具に紐づく種目のうち**一致した分だけ**が `machine_menus` 配列に残る |
 | 対応部位の全体を出す画面 | 絞り込みなしで引く |
-| 部位フィルタの契約 | FEAT-02 が正本。本書では呼び出し形のみ示す |
+| 部位・ジムのフィルタの契約 | FEAT-02 が正本。本書では呼び出し形のみ示す |
 
 ```dart
 // C-03 更新（全置換。部分更新は設けない） / C-04 削除。いずれも RPC＝1トランザクション
@@ -322,6 +325,8 @@ final row = await supabase.from('training_menus')
 
 - `user_id` をクライアントが指定できると、他人の行を作れてしまう。
 - したがって列は送らず DB 側で決める（§5.5）。
+- **AI提案（FEAT-03）から［登録］された種目もこの C-06 で作る。** 種目の登録は本機能の責務である。
+- 提案そのものは保存されない。登録した1件だけが `training_menus` に残る（FEAT-03 §7）。
 - C-07 は全置換。
 - **C-08 は履歴がある種目では失敗する**（`23503`・§6.1・ERR-MACHINE-013）。
 - 器具との紐づけ（`machine_menus`）は CASCADE で消えるため、削除を止めない。
@@ -545,7 +550,7 @@ INDEX の正本は `../01_DB物理設計.md §3`。
 |---|---|---|
 | `uq_mm_machine_menu(machine_id, menu_id)` | 器具→種目の結合。重複防止 | あり |
 | `ix_mm_menu(menu_id)` | 種目→器具の逆引き（FEAT-02・種目の削除可否判定） | あり |
-| `training_machines(gym_id)` | ジムでの絞り込み | **無い**（§10 #6） |
+| `training_machines(gym_id)` | ジムでの絞り込み（2026-08-08 決定で常用する） | **無い**（§10 #6） |
 
 - PostgreSQL は FK列に自動でINDEXを作らない。
 
@@ -737,6 +742,8 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | 送信中 | `FilledButton` の `onPressed` を `null` にし、ラベルを `CircularProgressIndicator` に差し替える | 再送信不可（二重送信防止） |
 | 成功 | `ScaffoldMessenger.showSnackBar`（「登録しました」）＋一覧（`ListView`）に追記 | 継続入力可（器具名と種目選択をクリア） |
 | 同上・一覧の行 | `ListTile`。導出した部位を `Wrap` ＋ `Chip` の**複数**で表示 | — |
+| 一覧（ジムが2件以上） | 一覧の上に `DropdownButtonFormField` を置き、選んだジムの器具だけを出す `[仮]` | ジム切替可 |
+| 一覧（ジムが1件） | ジムの選択UIを出さない。そのジムの器具だけを出す `[仮]` | — |
 | エラー（入力起因） | 該当ウィジェットに `errorText` 相当を表示（ERR-MACHINE-001/002/003/008/009/010/014/016） | 修正して再送信可 |
 | エラー（DB起因） | `ScaffoldMessenger.showSnackBar`（エラー配色）＋一覧の再取得（ERR-MACHINE-004〜007/011〜016） | 再送信可 |
 | エラー（認証） | サインイン画面へ遷移（`../../30_データ・IF設計/03_ドメインイベント.md §4` の共通挙動） | 操作不可 |
@@ -762,6 +769,10 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | 画面の役割 | SCR-02 は器具一覧の閲覧と登録を同一画面で行う |
 | 部位 `SegmentedButton` の役割 | ここでは**種目リストの絞り込み用**である |
 | 一覧側の部位絞り込み（RULE-004） | 契約は FEAT-02 が正本 |
+| 一覧側のジム絞り込み | **ジムを選んで絞る**（2026-08-08 決定）。UI は `DropdownButtonFormField` `[仮]` |
+| 同上・ジムが1件のとき | 選択UIを出さない `[仮]`。挙動の正本は FEAT-02 §7 |
+| 同上・登録フォームとの関係 | 一覧の絞り込みと登録フォームのジム欄は別物である（§7.2） |
+| 同上・既定値 | 登録フォームのジムは、一覧で選んでいるジムを初期値にする `[仮]` |
 | **部位を切り替えても種目の選択は保持する** | 部位をまたいで種目を選ぶ操作を1画面で完結させるため（§4 L-05） |
 | 選択済みチップの置き場 | 絞り込みの外に置く |
 | 選択の内部表現 | `Set<int>`。`value` は `selected.contains(menu.id)`、`onChanged` は集合への追加・削除 |
@@ -826,6 +837,8 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 | TC-FEAT01-20 | 紐づけの差し替え（全置換） | 3種目の器具を2種目に更新すると `machine_menus` が2行になる。外した種目の行が残らない |
 | TC-FEAT01-21 | 器具の削除 | `machine_menus` の子行も同時に消える。孤児行が残らない |
 | TC-FEAT01-22 | 同一部位の種目を2件持つ器具 | 一覧・絞り込みでその器具が1回だけ出る。`bodyParts` も1件に重複除去される |
+| TC-FEAT01-23 | ジムでの一覧の絞り込み（C-02） | 選んだジムの器具だけが返る。他ジムの器具は含まれない |
+| TC-FEAT01-24 | AI提案からの種目登録（C-06） | 提案の1件を［登録］すると `training_menus` に1行増える。他の提案は残らない |
 
 受入基準（G/W/T）の候補:
 - [AC] Given ジムと部位「胸」の種目が登録済み When 器具名とそのジム・種目を選んで登録する Then 器具が保存され、一覧で部位「胸」として表示される
@@ -834,6 +847,8 @@ SCR-02 は Flutter の1画面（`Scaffold`）である。ウィジェットは M
 - [AC] Given 種目が1件も無い状態 When SCR-02 を開く Then 器具登録フォームは無効で、種目作成への導線が表示される
 - [AC] Given ある種目がトレーニング明細から参照されている When その種目を削除しようとする Then ERR-MACHINE-013 が返り、履歴が保持される
 - [AC] Given 部位「脚」の種目に紐づく器具が登録済み When 部位「脚」で器具を照会する Then その器具が返る（絞り込み契約の正本は FEAT-02）
+- [AC] Given ジムが2件登録済み When 一覧でジムを選ぶ Then そのジムの器具だけが一覧に表示される
+- [AC] Given AI提案（FEAT-03）が表示されている When 1件を［登録］する Then その種目が種目マスタに追加される
 
 > 受入基準・ST・ERR の**正本は段6**（`../../60_テスト設計/02_RED母集合_受入基準・状態・エラー.md`・本PR対象外）。本節はその母集合への入力。
 
