@@ -133,7 +133,9 @@ class _DashboardPageState extends State<DashboardPage> {
   /// 1日の曜日ぶんだけ先頭に空きを置いて曜日列を合わせる。
   Widget _buildCalendar(DesignTokens t, Dashboard? data) {
     final done = data?.doneDates ?? const <String>{};
-    final names = {for (final day in data?.heatmap ?? const []) day.date: day.menuNames};
+    final names = {
+      for (final day in data?.heatmap ?? const []) day.date: day.menuNames,
+    };
     final first = _viewedMonth;
     final total = daysInMonth(first);
     // `DateTime.weekday` は 月=1…日=7。日曜始まりの表に合わせて 7 を 0 に畳む。
@@ -158,7 +160,10 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
               ),
-              _ArrowButton(symbol: '←', onTap: _isLoading ? null : () => _shift(-1)),
+              _ArrowButton(
+                symbol: '←',
+                onTap: _isLoading ? null : () => _shift(-1),
+              ),
               const SizedBox(width: 8),
               _ArrowButton(
                 symbol: '→',
@@ -198,9 +203,14 @@ class _DashboardPageState extends State<DashboardPage> {
               for (var day = 1; day <= total; day++)
                 _DayCell(
                   day: day,
-                  isDone: done.contains(formatDate(DateTime(first.year, first.month, day))),
+                  isDone: done.contains(
+                    formatDate(DateTime(first.year, first.month, day)),
+                  ),
                   menuNames:
-                      names[formatDate(DateTime(first.year, first.month, day))] ?? const [],
+                      names[formatDate(
+                        DateTime(first.year, first.month, day),
+                      )] ??
+                      const [],
                 ),
             ],
           ),
@@ -218,33 +228,46 @@ class _DashboardPageState extends State<DashboardPage> {
 
   /// 統計カード。デザインの2×2。**2枚は作らない**（クラスのコメント参照）。
   Widget _buildStats(DesignTokens t, Dashboard data) {
-    return Row(
-      spacing: 12,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: _StatCard(
-            label: 'ジムに行った日数',
-            value: '${data.doneDays}',
-            unit: '日',
+    // **`IntrinsicHeight` で高さを揃える。**
+    //
+    // `CrossAxisAlignment.stretch` だけだと落ちる。`ListView` の中の `Row` は
+    // 縦の制約が無限で、伸ばす先が決まらないためである
+    // （`Null check operator used on a null value`・2026-08-23 実機で発生）。
+    //
+    // `IntrinsicHeight` が先に高いほうの子を測り、有限の高さを与える。
+    // 子が2枚の小さなカードなので、余分な測定の負荷は問題にならない。
+    return IntrinsicHeight(
+      child: Row(
+        spacing: 12,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _StatCard(
+              label: 'ジムに行った日数',
+              value: '${data.doneDays}',
+              unit: '日',
+            ),
           ),
-        ),
-        Expanded(
-          child: _StatCard(
-            label: '週あたりのジム',
-            // 月の実績を週へ割った**表示指標**。目標は月次のまま（RULE-007）。
-            value: _formatRate(weeklyGymRate(data.doneDays, daysInMonth(_viewedMonth))),
-            unit: '回',
-            // 月次の目標も併記する。どちらが目標かを取り違えさせない。
-            note: '今月の目標 ${data.targetCount}回',
+          Expanded(
+            child: _StatCard(
+              label: '週あたりのジム',
+              // 月の実績を週へ割った**表示指標**。目標は月次のまま（RULE-007）。
+              value: _formatRate(
+                weeklyGymRate(data.doneDays, daysInMonth(_viewedMonth)),
+              ),
+              unit: '回',
+              // 月次の目標も併記する。どちらが目標かを取り違えさせない。
+              note: '今月の目標 ${data.targetCount}回',
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  static String _formatRate(double value) =>
-      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toStringAsFixed(1);
+  static String _formatRate(double value) => value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(1);
 }
 
 /// カレンダーの1マス。
@@ -403,9 +426,11 @@ class _StatCard extends StatelessWidget {
             children: [
               Text(
                 value,
-                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, height: 1)
-                    .merge(kTabularFigures)
-                    .copyWith(color: t.textColor),
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  height: 1,
+                ).merge(kTabularFigures).copyWith(color: t.textColor),
               ),
               Text(
                 unit,

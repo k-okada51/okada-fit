@@ -52,9 +52,31 @@ class ProfileRepository {
       throw ArgumentError.value(input, 'input', '更新する項目がありません');
     }
 
+    // **`id` の条件を必ず付ける。**
+    //
+    // 読み取り（[fetchProfile]）は RLS に任せて条件を書いていないが、
+    // **更新は書かないと通らない。** PostgREST は条件の無い UPDATE を
+    // 安全装置で拒否する。
+    //
+    //   PostgrestException(message: UPDATE requires a WHERE clause, code: 21000)
+    //
+    // 全行更新の事故を防ぐための仕組みで、RLS が絞っているかどうかは見ない。
+    // 実機で 2026-08-23 に判明した（SCR-05 が `ThemeScope` の不具合で
+    // 開けず、この経路が一度も通っていなかった）。
+    //
+    // **RLS の代わりではない。** `p_users_self` は残っており、他人の id を
+    // 書いても 0 行になる。ここで付けるのは PostgREST を通すための条件である。
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      // 未サインイン。`error_mapper` が ERR-AUTH-001 に写し、
+      // 画面はサインインし直すよう促す。
+      throw const AuthException('サインインしていません');
+    }
+
     final row = await _client
         .from('users')
         .update(patch)
+        .eq('id', userId)
         // 更新した行をそのまま受け取る。トリム結果を画面へ返すため
         // （FEAT-06 §7 の「値を応答値で置き換える」）。
         .select(_columns)

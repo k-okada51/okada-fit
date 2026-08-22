@@ -21,6 +21,9 @@ import 'widgets/surface_card.dart';
 /// 扱う値は3つ。表示名・目標トレーニング回数（月）・体重(kg)。
 /// 保存は明示的なボタン押下でだけ起きる。自動保存にしない（FEAT-06 §7）。
 ///
+/// **「保存する」は3項目をまとめて送り、成功したらホームへ戻る。**
+/// 項目ごとの保存は無い。キーボード上のバーの「保存」も同じ処理である。
+///
 /// ## デザインに従わない箇所
 ///
 /// | デザイン | ここでの実装 | 根拠 |
@@ -136,9 +139,21 @@ class _ProfilePageState extends State<ProfilePage> {
         _profile = saved;
         _applyToForm(saved);
       });
+      // 先に出してから戻る。`ScaffoldMessenger` は `MaterialApp` が持つので、
+      // この画面が消えても通知は残る。
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(const SnackBar(content: Text('保存しました')));
+
+      // **保存できたときだけホームへ戻る**（2026-08-23・岡田さん判断）。
+      //
+      // 「保存する」は3項目をまとめて送る。押した時点で設定画面に用は無く、
+      // 残しておくと「保存されたのか」が分かりにくい。戻れば SCR-00 が
+      // 体重を読み直すので、目標値が更新されたことも同時に見える。
+      //
+      // **失敗時は戻さない。** 入力値を保持したまま直せるようにする
+      // （FEAT-06 §7 の「入力値は消さない」）。
+      Navigator.of(context).maybePop();
     } catch (error) {
       if (!mounted) return;
       // 入力値は消さない。書き直しをやり直させないため（FEAT-06 §7）。

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -105,6 +106,17 @@ const errUnknown = AppFailure(
 /// | `AuthException` | Supabase Auth | ERR-AUTH-001 |
 /// | その他 | 通信 | 通信エラーの定型文 |
 AppFailure mapError(Object e) {
+  // **元の例外を開発者向けに残す。**
+  //
+  // 利用者向け文言に技術詳細を出さない（§1）のは正しいが、写像の時点で
+  // 例外そのものを捨てていたため、実機で失敗したときに手掛かりが何も
+  // 残らなかった。定型文だけを見て原因を当てることになる。
+  //
+  // `debugPrint` は release ビルドでは出力されない。利用者の目には触れない。
+  if (kDebugMode) {
+    debugPrint('mapError: ${e.runtimeType}: $e');
+  }
+
   // `FunctionException` を先に見る。通信断（`FunctionsFetchException`）も
   // この型の派生であり、後ろに置くと拾えない。
   if (e is FunctionException) return _fromFunctionException(e);
