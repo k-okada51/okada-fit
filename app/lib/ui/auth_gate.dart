@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/auth_repository.dart';
-import 'home_placeholder.dart';
+import 'app_shell.dart';
 import 'sign_in_page.dart';
 
 /// 認証状態で行き先を振り分ける。
@@ -36,7 +36,8 @@ class _AuthGateState extends State<AuthGate> {
           case AuthDestination.signIn:
             return SignInPage(authRepository: _authRepository);
           case AuthDestination.home:
-            return HomePlaceholder(authRepository: _authRepository);
+            // 下部ナビ付きの共通の枠へ渡す（ADR-0024 §1）。
+            return AppShell(authRepository: _authRepository);
         }
       },
     );

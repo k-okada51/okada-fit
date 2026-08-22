@@ -48,6 +48,9 @@ dependencies:
   # charset_converter は OS のコンバータを呼ぶため実機でしか確かめられない。
   # こちらは単体テストで文字化けの有無を確認できる。
   charset: ^2.0.1
+  # ダーク／ライトの選択を端末に保存する（ADR-0024 §3）。
+  # 保存するのはこの1項目だけ。設定の保管庫として広げない。
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:
