@@ -40,5 +40,13 @@ void showAppFailure(
 /// 例外をそのまま渡す版。[mapError] を挟む手間を省くだけ。
 ///
 /// catch した例外を握り潰さないための入口（§1 握り潰し禁止の原則）。
-void showError(BuildContext context, Object error, {VoidCallback? onRetry}) =>
-    showAppFailure(context, mapError(error), onRetry: onRetry);
+///
+/// **利用者が自分で中断したときは何も出さない**（2026-08-22 決定）。
+/// Google のアカウント選択を閉じたのにエラーが出るのは不自然であるため。
+/// 判定は [isUserCanceled]。ここに置けば全画面に効く。
+///
+/// これは握り潰しではない。**中断はそもそも失敗ではない**という扱いである。
+void showError(BuildContext context, Object error, {VoidCallback? onRetry}) {
+  if (isUserCanceled(error)) return;
+  showAppFailure(context, mapError(error), onRetry: onRetry);
+}

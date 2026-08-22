@@ -1,3 +1,4 @@
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// 利用者に見せる失敗の表現。
@@ -35,6 +36,20 @@ class AppFailure {
   String toString() =>
       'AppFailure(code: $code, retryable: $retryable, message: $message)';
 }
+
+/// 利用者が自分で操作を中断したか。
+///
+/// **中断は失敗ではない。** 画面に何も出さないための判定（2026-08-22 決定）。
+/// 自分でログイン画面を閉じたのにエラーが出るのは不自然である。
+///
+/// 判定は `GoogleSignInExceptionCode.canceled` に限る。
+/// 文字列の照合はしない。文言はプラットフォームと版で変わるため。
+///
+/// `interrupted`（中断だが利用者の意思ではない）は**含めない**。
+/// 端末側の都合で落ちた場合は、利用者に伝える必要がある。
+bool isUserCanceled(Object e) =>
+    e is GoogleSignInException &&
+    e.code == GoogleSignInExceptionCode.canceled;
 
 /// 認証の失敗（ERR-AUTH-001）。未認証・JWT 失効・RLS 拒否のいずれもこれ。
 ///

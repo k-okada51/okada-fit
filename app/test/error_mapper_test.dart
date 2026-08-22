@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:okada_fit/data/error_mapper.dart';
@@ -201,6 +202,35 @@ void main() {
       expect(failure.code.startsWith('ERR-'), isTrue, reason: '$label: ERR-ID でない');
       expect(failure.message, isNotEmpty, reason: '$label: 文言が空');
       expectNoLeak(failure, forbidden);
+    });
+  });
+
+  group('利用者の中断（2026-08-22 決定）', () {
+    test('7. canceled は「中断」と判定する', () {
+      const e = GoogleSignInException(code: GoogleSignInExceptionCode.canceled);
+      expect(isUserCanceled(e), isTrue);
+    });
+
+    test('8. interrupted は中断ではない（利用者の意思ではないため）', () {
+      const e = GoogleSignInException(
+        code: GoogleSignInExceptionCode.interrupted,
+      );
+      expect(isUserCanceled(e), isFalse,
+          reason: '端末都合の中断は利用者に伝える必要がある');
+    });
+
+    test('9. 設定不備を中断と取り違えない', () {
+      const e = GoogleSignInException(
+        code: GoogleSignInExceptionCode.clientConfigurationError,
+        description: 'client id is invalid',
+      );
+      expect(isUserCanceled(e), isFalse,
+          reason: '黙殺すると設定ミスに気づけなくなる');
+    });
+
+    test('10. 無関係な例外を中断と誤判定しない', () {
+      expect(isUserCanceled(Exception('canceled')), isFalse,
+          reason: '文字列ではなく code で判定していること');
     });
   });
 }
