@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  okada-fit 日次バックアップ（ADR-0017）の launchd 定義。
+
+  これは雛形。__HOME__ と __REPO_DIR__ を自分の環境の絶対パスに置き換えてから
+  ~/Library/LaunchAgents/ へ置く。置き換え手順は scripts/README.md を見る。
+
+  launchd は相対パスを解決しない。パスは全て絶対パスで書く。
+-->
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>jp.co.classlab.okadafit.backup</string>
+
+  <!-- 実行するもの。__REPO_DIR__ はリポジトリの絶対パス。 -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO_DIR__/scripts/backup_db.sh</string>
+  </array>
+
+  <!--
+    実行時刻: 毎日 12:30。
+
+    理由は2つ。
+    1. Docker Desktop が動いている見込みが高い。ログイン後の時間帯を選ぶ。
+       深夜に置くと、Mac がスリープでも launchd は起床時に1回走らせるが、
+       Docker Desktop の起動が間に合わず失敗しうる。
+    2. 昼の時間帯なら、失敗しても岡田さんがその日のうちにログで気づける。
+  -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>12</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <!--
+    launchd は対話シェルの PATH を継承しない。ここで明示する。
+    Supabase CLI は __HOME__/.local/bin、docker は /usr/local/bin にある。
+    （backup_db.sh 側でも PATH を設定しているが、両方で担保する）
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_DIR__</string>
+
+  <!--
+    標準出力・標準エラーの記録先。
+    実行の成否は backup_db.sh が __HOME__/okada-fit-backups/backup.log に1行で残す。
+    こちらは launchd 側から見た生の出力。CLI が落ちた時の詳細はここに出る。
+    ※ 置き場所のディレクトリが無いと launchd がジョブを起動できない。
+      README の手順どおり、先に backup_db.sh を1回手で実行して作っておく。
+  -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/okada-fit-backups/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/okada-fit-backups/launchd.err.log</string>
+
+  <!-- load した瞬間には走らせない。動作確認は README の手順で明示的に行う。 -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- 常駐させない。時刻が来たら1回走って終わる。 -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- 対話的な処理ではない。省電力の扱いを OS に任せる。 -->
+  <key>ProcessType</key>
+  <string>Background</string>
+
+</dict>
+</plist>
