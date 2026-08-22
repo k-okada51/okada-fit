@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../data/profile_repository.dart';
 import '../domain/profile.dart';
 import 'error_snack_bar.dart';
+import 'theme/theme_controller.dart';
 
 /// SCR-05 設定・プロフィール（FEAT-06）。
 ///
@@ -94,7 +95,9 @@ class _ProfilePageState extends State<ProfilePage> {
             parseTargetTrainingCount(_targetController.text),
           ),
           // 空欄なら null が入り、体重が未設定に戻る（FEAT-06 §4.3）。
-          weightKg: FieldPatch<double>.of(parseWeightKg(_weightController.text)),
+          weightKg: FieldPatch<double>.of(
+            parseWeightKg(_weightController.text),
+          ),
         ),
       );
       if (!mounted) return;
@@ -195,6 +198,7 @@ class _ProfilePageState extends State<ProfilePage> {
             ),
             validator: validateWeightKg,
           ),
+          const _ThemeModeTile(),
           const SizedBox(height: 24),
           FilledButton(
             // 保存中は押せなくする（二重送信防止・FEAT-06 §7）。
@@ -209,6 +213,31 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 表示モードの切替（ADR-0024 §3）。
+///
+/// **置き場所はここ1か所だけ。** デザインは全画面の右上にボタンを置いているが、
+/// それはモックを見比べるためのものと解釈した。各画面の右上を空けられる。
+///
+/// 切り替えた値は端末に保存される。次回起動でも維持される。
+class _ThemeModeTile extends StatelessWidget {
+  const _ThemeModeTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = ThemeScope.of(context);
+    final isDark = controller.themeMode == ThemeMode.dark;
+
+    return SwitchListTile(
+      value: isDark,
+      onChanged: (v) =>
+          controller.setThemeMode(v ? ThemeMode.dark : ThemeMode.light),
+      title: const Text('ダークモード'),
+      subtitle: const Text('夜のジムでも見やすい配色'),
+      contentPadding: EdgeInsets.zero,
     );
   }
 }

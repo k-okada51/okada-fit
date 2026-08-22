@@ -44,7 +44,10 @@ class ThemeController extends ChangeNotifier {
       );
       notifyListeners();
     } catch (error, stackTrace) {
-      debugPrintStack(label: 'ThemeController.load: $error', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'ThemeController.load: $error',
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -61,7 +64,34 @@ class ThemeController extends ChangeNotifier {
       await prefs.setString(_prefsKey, mode.name);
     } catch (error, stackTrace) {
       // 保存に失敗しても今回の表示は変わっている。次回起動で戻るだけ。
-      debugPrintStack(label: 'ThemeController.save: $error', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'ThemeController.save: $error',
+        stackTrace: stackTrace,
+      );
     }
+  }
+}
+
+/// [ThemeController] をウィジェット木に配る。
+///
+/// 画面ごとに引数で持ち回らないための仕組み。設定画面は木の深いところに
+/// あり、間の画面は表示モードに関心が無い。通り道に引数を足すのは無駄である。
+///
+/// `InheritedNotifier` を使うと、値の変化に応じて依存側だけが作り直される。
+class ThemeScope extends InheritedNotifier<ThemeController> {
+  const ThemeScope({
+    super.key,
+    required ThemeController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  /// 直近の [ThemeController] を取る。木の上に無ければ例外になる。
+  ///
+  /// 見つからないのは配線の誤りである。`null` を返して静かに壊れるより、
+  /// その場で落ちたほうが原因に早く辿り着ける。
+  static ThemeController of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<ThemeScope>();
+    assert(scope != null, 'ThemeScope が木の上に無い（main.dart の配線を確認）');
+    return scope!.notifier!;
   }
 }

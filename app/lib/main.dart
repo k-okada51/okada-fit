@@ -43,7 +43,9 @@ class OkadaFitApp extends StatelessWidget {
         darkTheme: buildDarkTheme(),
         themeMode: themeController.themeMode,
         // 画面の振り分けは AuthGate に任せる。ここでは行き先を決めない。
-        home: const AuthGate(),
+        // ThemeScope で包むのは、設定画面（SCR-05）が表示モードを
+        // 切り替えられるようにするため。画面ごとに引数で持ち回らない。
+        home: ThemeScope(controller: themeController, child: const AuthGate()),
       ),
     );
   }
