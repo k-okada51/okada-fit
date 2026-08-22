@@ -324,10 +324,18 @@ final row = await supabase.from('training_menus')
 | `name` | `String` | 必須 | trim 後1〜100文字 |
 | `body_part` | `String` | 必須 | 胸/背中/脚/肩/腕。`../01_DB物理設計.md §4` の CHECK と同値 |
 | `how_to` | `String?` | 任意 | 0〜1000文字。null 許容。**種目登録と同時に入れる運用**（下記） |
-| `user_id` | — | — | **アプリから送らない**。uuid（`auth.uid()` と同値）。RLS の `WITH CHECK (user_id = auth.uid())` で本人を強制する。既定値の指定は `[仮]` |
+| `user_id` | `String` | 必須 | **アプリから送る**（2026-08-22 確定）。`auth.uid()` と同値の uuid。RLS の `WITH CHECK (user_id = auth.uid())` が他人のIDを弾く |
 
-- `user_id` をクライアントが指定できると、他人の行を作れてしまう。
-- したがって列は送らず DB 側で決める（§5.5）。
+**`user_id` はアプリから送る**（2026-08-22 岡田さん決定）。
+
+| # | 理由 |
+|---|---|
+| 1 | **DB に `DEFAULT` が無い。** `user_id uuid NOT NULL` で既定値を持たない（適用済みスキーマで確認） |
+| 2 | **安全性は変わらない。** RLS の `WITH CHECK (user_id = auth.uid())` が他人のIDを弾く |
+| 3 | **書き忘れれば `23502` で落ちる。** 気づける |
+
+- `DEFAULT auth.uid()` を入れる案は採らない。**SQL エディタから insert できなくなる**ため（JWT が無く `auth.uid()` が `null` になる）。
+- `auth.uid()` は `INSERT` のたびに評価され、**そのリクエストを送った人**の uuid を返す。定義時に固定されるものではない。
 - ~~**AI提案（FEAT-03）から［登録］された種目もこの C-06 で作る。**~~（**2026-08-08 改訂**・ADR-0021）
 - **FEAT-03 は種目を登録しない。** 登録済みの種目から今日やる分を選ぶだけの機能になった。
 - したがって `training_menus` に行を作るのは**本機能だけ**である。経路が1本になった。
