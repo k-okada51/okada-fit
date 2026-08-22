@@ -1,0 +1,11 @@
+# Supabase
+.branches
+.temp
+
+# dotenvx
+.env.keys
+.env.local
+.env.*.local
+
+# DB接続文字列（パスワードを含む・コミット厳禁）
+.db-url

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Okada Fit</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>okada_fit</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- ================================================================= -->
+	<!-- Google ログイン（ADR-0023）が使う URL Scheme。                    -->
+	<!-- ネイティブのサインイン（signInWithIdToken）でも Google の iOS SDK -->
+	<!-- がこの登録を要求する。無いとログイン画面から戻ってこられない。    -->
+	<!--                                                                   -->
+	<!-- ★★★★★★★★★★ 【反映済み 2026-08-22】★★★★★★★★★★ -->
+	<!--   iOS 用クライアントIDを逆順にした値を設定済み。                 -->
+	<!--                                                                   -->
+	<!--   岡田さんが Google Cloud Console で iOS 用クライアントIDを       -->
+	<!--   作成した後（Bundle ID: jp.co.classlab.okadaFit）、              -->
+	<!--   その値を逆順にしたものへ差し替えること。                        -->
+	<!--                                                                   -->
+	<!--     クライアントID  123456-abcdef.apps.googleusercontent.com      -->
+	<!--     → 逆順         com.googleusercontent.apps.123456-abcdef       -->
+	<!--                                                                   -->
+	<!--   ★ 差し替えを忘れると実機で Google ログインが動かない。          -->
+	<!--   ★ 同じクライアントIDを --dart-define=GOOGLE_IOS_CLIENT_ID にも  -->
+	<!--     渡すこと（逆順にしない元の形で）。                            -->
+	<!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>google-reversed-client-id</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.15058703962-2tbavo9g0uu6tm9ukhf14i4a05ikgk88</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>UIWindowScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>flutter</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+					<key>UISceneStoryboardFile</key>
+					<string>Main</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- 食事写真の撮影・選択（FEAT-08）。iOS はこの文言が無いと起動時に落とす。 -->
+	<!-- 写真は解析のために1回送るだけで、端末にもサーバにも残さない（ADR-0003）。 -->
+	<key>NSCameraUsageDescription</key>
+	<string>食事の写真を撮って、タンパク質量を推定するために使います。写真は保存されません。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>保存済みの食事写真から、タンパク質量を推定するために使います。写真は保存されません。</string>
+</dict>
+</plist>
