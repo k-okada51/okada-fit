@@ -1,8 +1,13 @@
 @Timeout(Duration(minutes: 2))
+// 実接続を伴うため既定の `flutter test` からは外す（`dart_test.yaml`）。
+@Tags(['network'])
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:supabase/supabase.dart';
+// コア SDK（package:supabase）は supabase_flutter が再エクスポートしている。
+// 直接 import すると依存に無い扱いになる（depend_on_referenced_packages）ため
+// こちら経由で取る。使う型はコア SDK のものだけで、プラグイン層は初期化しない。
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:okada_fit/core/env.dart';
 

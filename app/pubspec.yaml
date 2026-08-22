@@ -35,6 +35,11 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   supabase_flutter: ^2.17.1
+  # Google ログイン（ADR-0023）。サインインの呼び出し自体は
+  # supabase_flutter の signInWithOAuth で行うため、現時点で Dart から
+  # 直接は参照しない。ADR-0023 のチェック項目6として先に入れてある。
+  # ネイティブのサインイン（signInWithIdToken）へ寄せるときに使う。
+  google_sign_in: ^7.2.0
 
 dev_dependencies:
   flutter_test:

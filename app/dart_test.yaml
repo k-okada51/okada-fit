@@ -1,0 +1,13 @@
+# テスト実行の既定値。
+#
+# `network` タグの付いたテストは既定で走らせない。
+# 実接続（ローカル or リモートの Supabase）と `--dart-define` が要るため、
+# 引数なしの `flutter test` では前提を満たせない。
+#
+# 走らせるとき:
+#   flutter test --tags network --dart-define-from-file=env/local.json
+tags:
+  network:
+    description: Supabase への実接続を伴う。接続情報の受け渡しが前提
+
+exclude_tags: network

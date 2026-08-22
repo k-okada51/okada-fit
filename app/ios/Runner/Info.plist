@@ -24,6 +24,44 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- ============================================================ -->
+	<!-- Google ログイン（ADR-0023）の戻り先。URL Scheme を2つ登録する。 -->
+	<!--                                                              -->
+	<!-- ★★★ 【岡田さんの作業】★★★                                 -->
+	<!--   下の REPLACE_WITH_IOS_CLIENT_ID は仮の値である。            -->
+	<!--   Google Cloud Console で iOS 用クライアントIDを作り          -->
+	<!--   （Bundle ID: jp.co.classlab.okadaFit）、その値に差し替える。 -->
+	<!--   形式は逆順クライアントID。                                  -->
+	<!--     例) クライアントID  123456-abcdef.apps.googleusercontent.com -->
+	<!--         → 逆順        com.googleusercontent.apps.123456-abcdef -->
+	<!--   ★ 差し替えを忘れると実機で Google ログインが動かない。      -->
+	<!-- ============================================================ -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<!-- Supabase の OAuth からアプリへ戻すためのスキーム。 -->
+			<!-- lib/data/auth_repository.dart の _oauthRedirectUrl と一致させる。 -->
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>supabase-oauth-callback</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>jp.co.classlab.okadafit</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- Google 側が要求する逆順クライアントID。★岡田さんが差し替える★ -->
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>google-reversed-client-id</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.REPLACE_WITH_IOS_CLIENT_ID</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
