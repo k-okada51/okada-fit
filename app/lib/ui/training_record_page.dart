@@ -4,7 +4,9 @@ import '../data/machine_repository.dart';
 import '../data/training_repository.dart';
 import '../domain/machine.dart';
 import '../domain/training_session.dart';
+import 'body_part_filter_page.dart';
 import 'error_snack_bar.dart';
+import 'menu_suggestion_page.dart';
 import 'training_gym_visit_sheet.dart';
 
 /// SCR-03 トレーニング（FEAT-04）。
@@ -232,6 +234,32 @@ class _TrainingRecordPageState extends State<TrainingRecordPage> {
       ..showSnackBar(const SnackBar(content: Text('入館を記録しました')));
   }
 
+  /// FEAT-02（部位・器具の絞り込み）→ FEAT-03（メニュー提案）へ進む。
+  ///
+  /// **器具を選ばせてから呼ぶ。** 0件のまま Edge Function を叩くと、
+  /// 選ぶものが無いまま課金だけが発生する（FEAT-02 §10 #1）。
+  /// 0件のときは前段の確定ボタンが非活性になる。
+  Future<void> _openMenuSuggestion() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => BodyPartFilterPage(
+          selectable: true,
+          onSubmit: (bodyPart, machines) {
+            if (machines.isEmpty) return;
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => MenuSuggestionPage(
+                  bodyPart: bodyPart,
+                  machines: machines,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -271,6 +299,17 @@ class _TrainingRecordPageState extends State<TrainingRecordPage> {
           subtitle: Text(formatDateOnly(_performedDate)),
           trailing: const Icon(Icons.calendar_today_outlined),
           onTap: _isSaving ? null : _pickPerformedDate,
+        ),
+        const Divider(height: 1),
+
+        // FEAT-03 への導線。部位と器具を選んでから AI に組ませる。
+        // **ここから EXT-01 の課金が始まる**ので、押されたときだけ進む。
+        ListTile(
+          leading: const Icon(Icons.auto_awesome_outlined),
+          title: const Text('今日のメニューを組む'),
+          subtitle: const Text('部位と器具を選ぶと、登録済みの種目から順番を作ります'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _isSaving ? null : _openMenuSuggestion,
         ),
         const Divider(height: 1),
 

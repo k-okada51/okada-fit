@@ -33,10 +33,14 @@ class BodyPartFilterPage extends StatefulWidget {
   /// 器具を選ばせるか（SCR-03）。既定は表示だけ（SCR-02）。
   final bool selectable;
 
-  /// 選んだ器具の受け渡し先（FEAT-03 の `machine_ids`・§1 #4）。
+  /// 選んだ部位と器具の受け渡し先（FEAT-03 の `body_part` と `machine_ids`・§1 #4）。
+  ///
+  /// **部位も一緒に渡す。** 器具から逆算しない。器具は複数の部位の種目を
+  /// 持ちうる（多対多・ADR-0021）ので、器具側から一意に決まらない。
+  /// 正は利用者が選んだ単一の部位である（RULE-003）。
   ///
   /// `null` のときは確定ボタンを出さない。押せない導線を置かないためである。
-  final ValueChanged<List<TrainingMachine>>? onSubmit;
+  final void Function(BodyPart bodyPart, List<TrainingMachine> machines)? onSubmit;
 
   @override
   State<BodyPartFilterPage> createState() => _BodyPartFilterPageState();
@@ -252,9 +256,11 @@ class _BodyPartFilterPageState extends State<BodyPartFilterPage> {
                 padding: const EdgeInsets.all(16),
                 child: FilledButton(
                   // 器具0件のときは押させない（§7・TC-FEAT02-19）。
-                  onPressed: selected.isEmpty
+                  // 部位未選択でも押させない。器具は部位を選んだ後にしか
+                  // 出ないので実際には起きないが、`!` を安全にしておく。
+                  onPressed: selected.isEmpty || _bodyPart == null
                       ? null
-                      : () => widget.onSubmit!(selected),
+                      : () => widget.onSubmit!(_bodyPart!, selected),
                   child: const Text('選んだ器具でメニューを作る'),
                 ),
               ),
