@@ -19,10 +19,15 @@ class DashboardRepository {
   /// **キャッシュしない**（§3）。当日値が変わるため、開くたびに集計し直す。
   ///
   /// 日付は端末のタイムゾーンで解決して渡す（案A・2026-08-08 確定）。
-  Future<Dashboard> fetch(DateTime now, DashboardPeriod period) async {
+  Future<Dashboard> fetch(
+    DateTime now,
+    DashboardPeriod period, {
+    DateTime? viewedMonth,
+  }) async {
     final json = await _client.rpc(
       'get_dashboard',
-      params: buildDashboardRange(now, period).toParams(period),
+      params: buildDashboardRange(now, period, viewedMonth: viewedMonth)
+          .toParams(period),
     );
     return Dashboard.fromJson(Map<String, dynamic>.from(json as Map));
   }

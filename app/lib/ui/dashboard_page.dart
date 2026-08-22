@@ -1,10 +1,7 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../data/dashboard_repository.dart';
 import '../domain/dashboard.dart';
-import '../domain/nutrition.dart';
 import 'error_snack_bar.dart';
 import 'theme/app_theme.dart';
 import 'theme/design_tokens.dart';
@@ -13,15 +10,24 @@ import 'widgets/surface_card.dart';
 /// SCR-01 ダッシュボード（FEAT-05）。下部ナビの「ダッシュボード」。
 ///
 /// **記録を振り返る画面である。** ホームではない（ADR-0024）。
+/// 原本は Claude Design の `SCR-01 Dashboard.dc.html`。
 ///
-/// | 出すもの | 由来 |
-/// |---|---|
-/// | 摂取ゲージ | `weight_kg` と `intake_g` から Dart が算出（FEAT-07） |
-/// | 今月の実施回数 | `training_count`。**期間切替に依存しない**（§3） |
-/// | ヒートマップ | `heatmap`。**返るのは塗る日だけ** |
+/// ## 期間切替（日/週/月）を持たない
 ///
-/// 体重が未設定なら**ゲージを描かず案内に差し替える**（FEAT-07 §7）。
-/// エラーにしない。ヒートマップと回数は通常どおり出す（NFR-AVAIL-05）。
+/// 設計の `p_period` は `[仮]` である（FEAT-05 §3・§10-7）。「日」を選ぶと
+/// ヒートマップが1マスしか出ず、振り返りにならない。デザインどおり
+/// **月固定＋ ←/→ で前後の月**にした。RPC は `p_range_start`/`p_range_end` を
+/// 受けるので、サーバ側の変更は要らない。
+///
+/// ## デザインに従わない箇所
+///
+/// | デザイン | ここでの実装 | 根拠 |
+/// |---|---|---|
+/// | 平均タンパク質 | **出さない** | ADR-0024 §4 #8・FEAT-05 §10 #5 |
+/// | P目標を達成した日 | **出さない** | RPC が日別のタンパク質合計を返さない |
+///
+/// **「週あたりのジム」は出す。** 目標は月次のまま（RULE-007）で、これは月の
+/// 実績を週へ割った表示指標である。2つ目の目標ではない（2026-08-23 決定）。
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key, this.repository, this.now});
 
@@ -37,7 +43,9 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   late final _repository = widget.repository ?? DashboardRepository();
 
-  DashboardPeriod _period = DashboardPeriod.month;
+  /// 見ている月。既定は当月。**当日は動かさない**（ゲージは常に当日）。
+  late DateTime _viewedMonth = DateTime(_nowValue.year, _nowValue.month, 1);
+
   Dashboard? _data;
   bool _isLoading = true;
 
@@ -52,7 +60,11 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _load() async {
     setState(() => _isLoading = true);
     try {
-      final data = await _repository.fetch(_nowValue, _period);
+      final data = await _repository.fetch(
+        _nowValue,
+        DashboardPeriod.month,
+        viewedMonth: _viewedMonth,
+      );
       if (!mounted) return;
       setState(() => _data = data);
     } catch (error) {
@@ -63,9 +75,12 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  void _changePeriod(DashboardPeriod period) {
-    if (_period == period || _isLoading) return;
-    setState(() => _period = period);
+  void _shift(int delta) {
+    if (_isLoading) return;
+    final next = shiftMonth(_viewedMonth, delta);
+    // 未来は見せない。データが存在しえない月を出しても意味が無い。
+    if (delta > 0 && !canGoForward(_viewedMonth, _nowValue)) return;
+    setState(() => _viewedMonth = next);
     _load();
   }
 
@@ -83,7 +98,7 @@ class _DashboardPageState extends State<DashboardPage> {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                '記録を振り返る',
+                'ダッシュボード',
                 style: TextStyle(
                   color: t.textColor,
                   fontSize: 16,
@@ -101,15 +116,9 @@ class _DashboardPageState extends State<DashboardPage> {
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
                     children: [
-                      if (data != null) ...[
-                        _buildGauge(t, data),
-                        const SizedBox(height: 18),
-                        _buildTrainingCount(t, data),
-                        const SizedBox(height: 18),
-                      ],
-                      _buildPeriodSwitch(t),
-                      const SizedBox(height: 12),
-                      if (data != null) _buildHeatmap(t, data),
+                      _buildCalendar(t, data),
+                      const SizedBox(height: 18),
+                      if (data != null) _buildStats(t, data),
                     ],
                   ),
                 ),
@@ -118,281 +127,305 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  /// 摂取ゲージ。**式は書かない**（FEAT-07 §4.5 案(b)）。
-  Widget _buildGauge(DesignTokens t, Dashboard data) {
-    final target = data.proteinTarget;
-
-    if (target is! ProteinTargetOk) {
-      // 未設定・不正値。**エラーにしない**（FEAT-07 §4.3）。
-      return SurfaceCard(
-        radius: Dimens.radiusCard,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          spacing: 8,
-          children: [
-            Text(
-              '今日のタンパク質',
-              style: TextStyle(
-                color: t.textColor.withValues(alpha: 0.75),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            Text(
-              target is ProteinTargetUnset
-                  ? '体重を登録すると目標が表示されます。'
-                  : '体重の値を確認してください。目標を計算できません。',
-              style: TextStyle(color: t.textColor, fontSize: 14),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final pct = data.ratePct ?? 0;
+  /// 月のカレンダー。デザインの最上段のカード。
+  ///
+  /// **返るのは塗る日だけ**（§3）。マスは月の日数から自分で作り、
+  /// 1日の曜日ぶんだけ先頭に空きを置いて曜日列を合わせる。
+  Widget _buildCalendar(DesignTokens t, Dashboard? data) {
+    final done = data?.doneDates ?? const <String>{};
+    final names = {for (final day in data?.heatmap ?? const []) day.date: day.menuNames};
+    final first = _viewedMonth;
+    final total = daysInMonth(first);
+    // `DateTime.weekday` は 月=1…日=7。日曜始まりの表に合わせて 7 を 0 に畳む。
+    final leading = first.weekday % 7;
 
     return SurfaceCard(
       radius: Dimens.radiusCard,
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        spacing: 10,
+        spacing: 14,
         children: [
-          Text(
-            '今日のタンパク質',
-            style: TextStyle(
-              color: t.textColor.withValues(alpha: 0.75),
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            spacing: 4,
             children: [
-              Text(
-                // 表示は整数 g（FEAT-07 §4.2）。丸めは UI 層の担当。
-                '${data.intakeG.round()}',
-                style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800, height: 1)
-                    .merge(kTabularFigures)
-                    .copyWith(color: t.textColor),
-              ),
-              Text(
-                '/ ${target.targetG.round()}g',
-                style: TextStyle(
-                  color: t.textColor.withValues(alpha: 0.7),
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '$pct%',
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)
-                    .merge(kTabularFigures)
-                    .copyWith(color: t.accent),
-              ),
-            ],
-          ),
-          _Bar(progress: pct / 100),
-        ],
-      ),
-    );
-  }
-
-  /// 今月のトレーニング。**期間切替に依存しない**（§3）。
-  Widget _buildTrainingCount(DesignTokens t, Dashboard data) {
-    final pct = data.trainingRatePct;
-
-    return SurfaceCard(
-      radius: Dimens.radiusCard,
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        spacing: 10,
-        children: [
-          Text(
-            '今月のトレーニング',
-            style: TextStyle(
-              color: t.textColor.withValues(alpha: 0.75),
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            spacing: 4,
-            children: [
-              Text(
-                '${data.doneDays}',
-                style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800, height: 1)
-                    .merge(kTabularFigures)
-                    .copyWith(color: t.textColor),
-              ),
-              Text(
-                '/ ${data.targetCount}回',
-                style: TextStyle(
-                  color: t.textColor.withValues(alpha: 0.7),
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              if (pct != null)
-                Text(
-                  '$pct%',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)
-                      .merge(kTabularFigures)
-                      .copyWith(color: t.accent),
-                ),
-            ],
-          ),
-          if (pct != null) _Bar(progress: pct / 100),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPeriodSwitch(DesignTokens t) {
-    return Row(
-      spacing: 8,
-      children: [
-        for (final period in DashboardPeriod.values)
-          Expanded(
-            child: Material(
-              color: Colors.transparent,
-              child: Ink(
-                decoration: BoxDecoration(
-                  color: _period == period ? t.ctaSoft : Colors.transparent,
-                  borderRadius: BorderRadius.circular(Dimens.radiusInput),
-                  border: Border.all(
-                    color: _period == period ? t.accentBorder : t.hairline,
+              Expanded(
+                child: Text(
+                  '${first.month}月のジム記録',
+                  style: TextStyle(
+                    color: t.textColor,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-                child: InkWell(
-                  // 読込中は切り替えさせない（FEAT-07 §7 の「読込中は非活性」）。
-                  onTap: _isLoading ? null : () => _changePeriod(period),
-                  borderRadius: BorderRadius.circular(Dimens.radiusInput),
-                  child: SizedBox(
-                    height: 38,
-                    child: Center(
-                      child: Text(
-                        period.label,
-                        style: TextStyle(
-                          color: _period == period
-                              ? t.accent
-                              : t.textColor.withValues(alpha: 0.6),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
+              ),
+              _ArrowButton(symbol: '←', onTap: _isLoading ? null : () => _shift(-1)),
+              const SizedBox(width: 8),
+              _ArrowButton(
+                symbol: '→',
+                // 当月より先へは進ませない。
+                onTap: _isLoading || !canGoForward(_viewedMonth, _nowValue)
+                    ? null
+                    : () => _shift(1),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              for (final label in const ['日', '月', '火', '水', '木', '金', '土'])
+                Expanded(
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: t.textColor.withValues(alpha: 0.55),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
                 ),
-              ),
-            ),
+            ],
           ),
-      ],
-    );
-  }
-
-  /// ヒートマップ。**返るのは塗る日だけ**なので、マスは範囲から自分で作る。
-  Widget _buildHeatmap(DesignTokens t, Dashboard data) {
-    final range = buildDashboardRange(_nowValue, _period);
-    final days = datesIn(
-      DateTime.parse(range.rangeStart),
-      DateTime.parse(range.rangeEnd),
-    );
-    final done = data.doneDates;
-    final names = {for (final day in data.heatmap) day.date: day.menuNames};
-
-    return SurfaceCard(
-      radius: Dimens.radiusCard,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        spacing: 12,
-        children: [
-          Text(
-            'ジムに行った日',
-            style: TextStyle(
-              color: t.textColor.withValues(alpha: 0.75),
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
+          GridView.count(
+            crossAxisCount: 7,
+            mainAxisSpacing: 6,
+            crossAxisSpacing: 6,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
             children: [
-              for (final day in days)
-                Tooltip(
-                  message: done.contains(formatDate(day))
-                      ? '${day.month}/${day.day}: ${(names[formatDate(day)] ?? const []).join('・')}'
-                      : '${day.month}/${day.day}',
-                  child: Container(
-                    width: 26,
-                    height: 26,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: done.contains(formatDate(day)) ? t.fill : t.ringTrack,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      '${day.day}',
-                      style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700)
-                          .merge(kTabularFigures)
-                          .copyWith(
-                            color: done.contains(formatDate(day))
-                                ? t.ctaFg
-                                : t.textColor.withValues(alpha: 0.45),
-                          ),
-                    ),
-                  ),
+              // 1日の曜日まで空ける。
+              for (var i = 0; i < leading; i++) const SizedBox.shrink(),
+              for (var day = 1; day <= total; day++)
+                _DayCell(
+                  day: day,
+                  isDone: done.contains(formatDate(DateTime(first.year, first.month, day))),
+                  menuNames:
+                      names[formatDate(DateTime(first.year, first.month, day))] ?? const [],
                 ),
             ],
           ),
-          if (data.heatmap.isEmpty)
-            Text(
-              'この期間の記録はありません。',
-              style: TextStyle(
-                color: t.textColor.withValues(alpha: 0.5),
-                fontSize: 11,
-              ),
-            ),
+          Row(
+            spacing: 16,
+            children: [
+              _Legend(color: t.fill, label: 'ジムに行った'),
+              _Legend(color: t.ringTrack, label: '行っていない'),
+            ],
+          ),
         ],
       ),
     );
   }
+
+  /// 統計カード。デザインの2×2。**2枚は作らない**（クラスのコメント参照）。
+  Widget _buildStats(DesignTokens t, Dashboard data) {
+    return Row(
+      spacing: 12,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: _StatCard(
+            label: 'ジムに行った日数',
+            value: '${data.doneDays}',
+            unit: '日',
+          ),
+        ),
+        Expanded(
+          child: _StatCard(
+            label: '週あたりのジム',
+            // 月の実績を週へ割った**表示指標**。目標は月次のまま（RULE-007）。
+            value: _formatRate(weeklyGymRate(data.doneDays, daysInMonth(_viewedMonth))),
+            unit: '回',
+            // 月次の目標も併記する。どちらが目標かを取り違えさせない。
+            note: '今月の目標 ${data.targetCount}回',
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _formatRate(double value) =>
+      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toStringAsFixed(1);
 }
 
-/// 達成率のバー。円グラフは SCR-00 が持っているので、ここは横棒にする。
-class _Bar extends StatelessWidget {
-  const _Bar({required this.progress});
+/// カレンダーの1マス。
+class _DayCell extends StatelessWidget {
+  const _DayCell({
+    required this.day,
+    required this.isDone,
+    required this.menuNames,
+  });
 
-  final double progress;
+  final int day;
+  final bool isDone;
+  final List<String> menuNames;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(Dimens.radiusChip),
-      child: SizedBox(
-        height: 8,
-        child: Stack(
-          children: [
-            Positioned.fill(child: ColoredBox(color: t.ringTrack)),
-            FractionallySizedBox(
-              // 100%で頭打ち。負にもしない。
-              widthFactor: math.min(1, math.max(0, progress)),
-              child: ColoredBox(color: t.fill),
-            ),
-          ],
+    return Tooltip(
+      message: isDone && menuNames.isNotEmpty ? menuNames.join('・') : '$day日',
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: isDone ? t.fill : t.ringTrack,
+          borderRadius: BorderRadius.circular(10),
         ),
+        child: Text(
+          '$day',
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)
+              .merge(kTabularFigures)
+              .copyWith(
+                color: isDone ? t.ctaFg : t.textColor.withValues(alpha: 0.5),
+              ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 前月・翌月のボタン。デザインの `←` `→`。
+class _ArrowButton extends StatelessWidget {
+  const _ArrowButton({required this.symbol, required this.onTap});
+
+  final String symbol;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final radius = BorderRadius.circular(Dimens.radiusInput);
+    final enabled = onTap != null;
+
+    return Material(
+      color: Colors.transparent,
+      child: Ink(
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          border: Border.all(color: t.hairline),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: radius,
+          child: SizedBox(
+            width: 40,
+            height: 34,
+            child: Center(
+              child: Text(
+                symbol,
+                style: TextStyle(
+                  color: t.textColor.withValues(alpha: enabled ? 0.8 : 0.25),
+                  fontSize: 15,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 凡例。
+class _Legend extends StatelessWidget {
+  const _Legend({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      spacing: 6,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            color: t.textColor.withValues(alpha: 0.65),
+            fontSize: 11,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 統計カード。デザインの下段。
+class _StatCard extends StatelessWidget {
+  const _StatCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    this.note,
+  });
+
+  final String label;
+  final String value;
+  final String unit;
+
+  /// 数値の下の小さな補足。
+  final String? note;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final note = this.note;
+
+    return SurfaceCard(
+      radius: Dimens.radiusCard,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 6,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: t.textColor.withValues(alpha: 0.72),
+              fontSize: 11,
+            ),
+          ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            spacing: 3,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, height: 1)
+                    .merge(kTabularFigures)
+                    .copyWith(color: t.textColor),
+              ),
+              Text(
+                unit,
+                style: TextStyle(
+                  color: t.textColor.withValues(alpha: 0.7),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          if (note != null)
+            Text(
+              note,
+              style: TextStyle(
+                color: t.textColor.withValues(alpha: 0.5),
+                fontSize: 10,
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -165,4 +165,54 @@ void main() {
       expect(datesIn(DateTime(2026, 8, 6), DateTime(2026, 8, 5)), isEmpty);
     });
   });
+
+  group('月の前後移動（デザインの ←/→）', () {
+    test('14. 見る月を変えても「当日」は動かない（ゲージは常に当日）', () {
+      final r = buildDashboardRange(
+        DateTime(2026, 8, 22),
+        DashboardPeriod.month,
+        viewedMonth: DateTime(2026, 7, 1),
+      );
+      expect(r.today, '2026-08-22', reason: 'ゲージは当日固定（FEAT-05 §10 #5）');
+      expect(r.rangeStart, '2026-07-01');
+      expect(r.rangeEnd, '2026-07-31');
+      // 回数もその月に合わせる。カレンダーと数字がずれないため。
+      expect(r.monthStart, '2026-07-01');
+      expect(r.monthEnd, '2026-07-31');
+    });
+
+    test('15. 月をまたいで動かす。日は必ず1日に落ちる', () {
+      expect(shiftMonth(DateTime(2026, 1, 31), -1), DateTime(2025, 12, 1));
+      expect(shiftMonth(DateTime(2026, 12, 15), 1), DateTime(2027, 1, 1));
+    });
+
+    test('16. 未来の月へは進ませない', () {
+      final now = DateTime(2026, 8, 22);
+      expect(canGoForward(DateTime(2026, 7, 1), now), isTrue);
+      expect(canGoForward(DateTime(2026, 8, 1), now), isFalse, reason: '当月が最新');
+      expect(canGoForward(DateTime(2026, 9, 1), now), isFalse);
+      expect(canGoForward(DateTime(2025, 12, 1), now), isTrue, reason: '年をまたぐ過去');
+    });
+  });
+
+  group('週あたりのジム（表示指標。目標ではない）', () {
+    test('17. 月の実績を週へ割る', () {
+      // デザインの例: 31日の月に11日行って 2.5回/週。
+      expect(weeklyGymRate(11, 31), 2.5);
+      expect(weeklyGymRate(0, 31), 0);
+      // 28日の月なら 4週ちょうど。
+      expect(weeklyGymRate(8, 28), 2.0);
+    });
+
+    test('18. 日数が0でも0除算しない', () {
+      expect(weeklyGymRate(5, 0), 0);
+    });
+
+    test('19. 月の日数は翌月0日で求める', () {
+      expect(daysInMonth(DateTime(2026, 2, 1)), 28);
+      expect(daysInMonth(DateTime(2028, 2, 1)), 29);
+      expect(daysInMonth(DateTime(2026, 4, 1)), 30);
+      expect(daysInMonth(DateTime(2026, 8, 1)), 31);
+    });
+  });
 }

@@ -64,10 +64,18 @@ class DashboardRange {
 ///
 /// 月末は「翌月の0日」で求める。`DateTime(2026, 3, 0)` は 2026-02-28 になり、
 /// **閏年の判定を自分で書かずに済む。**
-DashboardRange buildDashboardRange(DateTime now, DashboardPeriod period) {
+///
+/// [viewedMonth] を渡すと、その月を見る（デザインの ←/→）。**当日は動かさない。**
+/// ゲージは常に当日である（FEAT-05 §10 #5）。動くのはヒートマップと回数だけ。
+DashboardRange buildDashboardRange(
+  DateTime now,
+  DashboardPeriod period, {
+  DateTime? viewedMonth,
+}) {
   final today = DateTime(now.year, now.month, now.day);
-  final monthStart = DateTime(today.year, today.month, 1);
-  final monthEnd = DateTime(today.year, today.month + 1, 0);
+  final base = viewedMonth ?? today;
+  final monthStart = DateTime(base.year, base.month, 1);
+  final monthEnd = DateTime(base.year, base.month + 1, 0);
 
   final (start, end) = switch (period) {
     DashboardPeriod.day => (today, today),
@@ -86,6 +94,34 @@ DashboardRange buildDashboardRange(DateTime now, DashboardPeriod period) {
     monthEnd: formatDate(monthEnd),
   );
 }
+
+/// 週あたりのジム回数（デザインの「週あたりのジム 2.5回」）。
+///
+/// **目標は月次のまま**（RULE-007）。これは月の実績を週へ割った**表示指標**で、
+/// 2つ目の目標ではない。
+///
+/// 月次の数字だけだと「今月あと何回」が分かっても、いま行くべきかが分からない。
+/// 週あたりに割ると「今週は足りていない」が読める。行動を変えるのはこちらである。
+///
+/// 割る数は「その月の日数 ÷ 7」。31日の月なら 4.43 週で、11日行けば 2.5回/週。
+/// 小数第1位まで。
+double weeklyGymRate(int doneDays, int daysInMonth) {
+  if (daysInMonth <= 0) return 0;
+  final weeks = daysInMonth / 7;
+  return (doneDays / weeks * 10).round() / 10;
+}
+
+/// その月の日数。翌月の0日で求める（閏年の判定を書かない）。
+int daysInMonth(DateTime month) => DateTime(month.year, month.month + 1, 0).day;
+
+/// 表示できる最も新しい月。**未来は見せない**（デザインの → が非活性）。
+bool canGoForward(DateTime viewedMonth, DateTime now) =>
+    viewedMonth.year < now.year ||
+    (viewedMonth.year == now.year && viewedMonth.month < now.month);
+
+/// 月を動かす。日は必ず1日に落とす。
+DateTime shiftMonth(DateTime month, int delta) =>
+    DateTime(month.year, month.month + delta, 1);
 
 /// `YYYY-MM-DD`。
 String formatDate(DateTime date) =>
