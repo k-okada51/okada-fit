@@ -185,7 +185,7 @@ Deno の `fetch` で直接呼ぶ。SDK は使わない。API 仕様は **2026-08
 | 項目 | 値 | 根拠 |
 |---|---|---|
 | エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` | EXT-01 |
-| モデル | 環境変数 `GEMINI_MODEL`（既定 `gemini-3.5-flash`）。**ハードコードしない** | EXT-01 |
+| モデル | 環境変数 `GEMINI_MODEL`（既定 `gemini-3.7-flash`・ADR-0025）。**ハードコードしない** | EXT-01 |
 | 認証 | ヘッダ `x-goog-api-key: $GEMINI_API_KEY`。Edge Function の環境変数のみ。Flutter 側には置かない | NFR-SEC-02 |
 | 構造化出力 | `generationConfig.response_mime_type: "application/json"` ＋ `generationConfig.response_schema` | EXT-01 |
 | 入力 | `contents[].parts[].text`（system 相当は `systemInstruction: { parts: [{ text }] }`）。画像入力は使わない（FEAT-08 のみ） | §4 L2 |

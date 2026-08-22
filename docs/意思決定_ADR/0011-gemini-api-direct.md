@@ -41,7 +41,7 @@ status: draft
 | 項目 | 値 |
 |---|---|
 | 呼び出し元 | Supabase Edge Function（Deno）。`generate-menu`（FEAT-03）・`analyze-meal`（FEAT-08） |
-| モデル | `gemini-3.5-flash`。環境変数 `GEMINI_MODEL` で設定値化し、コードに埋め込まない |
+| モデル | `gemini-3.5-flash`。環境変数 `GEMINI_MODEL` で設定値化し、コードに埋め込まない。**→ 既定値は ADR-0025 で `gemini-3.7-flash` に改訂（2026-08-22）。経路の決定は有効** |
 | 認証 | HTTPヘッダ `x-goog-api-key`。値は **Edge Function の環境変数のみ**（NFR-SEC-02） |
 | メソッド | `generateContent` |
 | 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |

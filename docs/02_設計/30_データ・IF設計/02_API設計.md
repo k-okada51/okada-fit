@@ -447,7 +447,7 @@ status: draft
 |---|---|
 | エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` |
 | 認証ヘッダ | `x-goog-api-key: $GEMINI_API_KEY` |
-| モデルID | `gemini-3.5-flash`（環境変数 `GEMINI_MODEL`） |
+| モデルID | `gemini-3.7-flash`（環境変数 `GEMINI_MODEL`） |
 | 画像入力 | `contents[].parts[].inline_data: { mime_type, data }` |
 | 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |
 | system 指示 | `systemInstruction: { parts: [{ text }] }` |

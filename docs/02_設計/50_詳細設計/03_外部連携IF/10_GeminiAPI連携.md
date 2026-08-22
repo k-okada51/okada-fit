@@ -28,7 +28,7 @@ status: draft
 | エンドポイント | `POST https://generativelanguage.googleapis.com/v1beta/{model=models/*}:generateContent` |
 | 認証 | ヘッダ `x-goog-api-key: $GEMINI_API_KEY` |
 | キーの置き場所 | Edge Function の環境変数のみ🔒（NFR-SEC-02） |
-| モデル | `gemini-3.5-flash`。環境変数 `GEMINI_MODEL` で指定。ハードコードしない |
+| モデル | `gemini-3.7-flash`（ADR-0025）。環境変数 `GEMINI_MODEL` で指定。ハードコードしない |
 | 実装 | Deno の `fetch`。SDK は使わない |
 | 形式 | UTF-8・`application/json` |
 | 構造化出力 | `generationConfig.response_mime_type` ＋ `generationConfig.response_schema` |

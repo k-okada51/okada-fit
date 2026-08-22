@@ -19,7 +19,7 @@ status: draft
 
 | 連携先                                       | ファイル                                     | 主なEXT-ID |
 | ----------------------------------------- | ---------------------------------------- | -------- |
-| Google Gemini API（モデル `gemini-3.5-flash`） | [`10_GeminiAPI連携.md`](10_GeminiAPI連携.md) | EXT-01   |
+| Google Gemini API（モデル `gemini-3.7-flash`） | [`10_GeminiAPI連携.md`](10_GeminiAPI連携.md) | EXT-01   |
 
 
 外部連携は **EXT-01（Google Gemini API）の1件のみ**。用途は2つ。
