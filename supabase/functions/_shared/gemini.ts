@@ -12,12 +12,35 @@ const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models
 
 /// 応答を待つ上限。20秒の目標（NFR-PERF-04）に2秒の余裕を残す。
 ///
-/// ⚠️ `[仮]`（FEAT-08 §3.2）。実測で足りなければ見直す。
+/// ## 実測（2026-08-22・`gemini-3.7-flash`・画像33KB・thinkingLevel=medium）
+///
+/// | 回 | 所要 |
+/// |---|---|
+/// | 1回目 | **18秒を超えて中断**（`ERR-AI-TIMEOUT`） |
+/// | 2回目 | 5.9秒 |
+///
+/// ⚠️ **18秒で足りない回がある。** ばらつきが大きく、2回のうち1回が超えた。
+/// それでも 18 秒を維持するのは、NFR-PERF-04（≤20秒）が上限だからである。
+/// 伸ばすと NFR に反し、待たされた末に失敗する体験も変わらない。
+///
+/// 頻発するようなら、上げるのは待ち時間ではなく `thinkingLevel` を下げる側で
+/// 調整する（ADR-0018 の残課題）。
 export const GEMINI_TIMEOUT_MS = 18_000;
 
-/// 思考量。**確定値**（ADR-0018）。`high` は使わない。
+/// 思考量。**値は確定**（ADR-0018）。`high` は使わない。
 ///
-/// 旧 `thinkingConfig` は誤り。`thinking_budget`（旧）と併用すると 400 になる。
+/// ⚠️ **置き場所は ADR-0018 の記述と違う。**
+///
+/// ADR-0018 は `generationConfig.thinking_level` としていたが、`:generateContent`
+/// はそのフィールドを知らない（実測・2026-08-22）。
+///
+/// ```text
+/// Unknown name "thinking_level" at 'generation_config': Cannot find field.
+/// ```
+///
+/// 公式ドキュメントの `generation_config.thinking_level` という例は
+/// **`/v1beta/interactions`（別エンドポイント）のもの**である。本PJが使う
+/// `:generateContent` では `thinkingConfig` の下に入る。
 export const THINKING_LEVEL = 'medium';
 
 export interface GeminiPart {
@@ -77,7 +100,8 @@ export async function callGemini(input: GeminiCallInput): Promise<GeminiCallResu
         generationConfig: {
           response_mime_type: 'application/json',
           response_schema: input.responseSchema,
-          thinking_level: THINKING_LEVEL,
+          // `thinkingBudget`（旧）とは併用しない。併用すると 400 になる。
+          thinkingConfig: { thinkingLevel: THINKING_LEVEL },
         },
       }),
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
