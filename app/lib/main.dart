@@ -33,19 +33,26 @@ class OkadaFitApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 表示モードが変わったらここだけ作り直す（ADR-0024 §3）。
-    return ListenableBuilder(
-      listenable: themeController,
-      builder: (context, _) => MaterialApp(
-        title: 'Okada Fit',
-        // 配色はデザインの実測値（ADR-0024 §2）。`seedColor` は使わない。
-        theme: buildLightTheme(),
-        darkTheme: buildDarkTheme(),
-        themeMode: themeController.themeMode,
-        // 画面の振り分けは AuthGate に任せる。ここでは行き先を決めない。
-        // ThemeScope で包むのは、設定画面（SCR-05）が表示モードを
-        // 切り替えられるようにするため。画面ごとに引数で持ち回らない。
-        home: ThemeScope(controller: themeController, child: const AuthGate()),
+    // ⚠️ **`ThemeScope` は `MaterialApp` より外に置く。**
+    //
+    // `home:` の中に置くと、`Navigator.push` で開いた画面から見えない。
+    // push された画面は Navigator の直下に生え、`home` の中身より上に来るためで、
+    // 設定画面（SCR-05）が `ThemeScope.of` で落ちる。
+    // 表示モードを切り替えるのは、まさにその push された画面である。
+    return ThemeScope(
+      controller: themeController,
+      // 表示モードが変わったら MaterialApp から作り直す（ADR-0024 §3）。
+      child: ListenableBuilder(
+        listenable: themeController,
+        builder: (context, _) => MaterialApp(
+          title: 'Okada Fit',
+          // 配色はデザインの実測値（ADR-0024 §2）。`seedColor` は使わない。
+          theme: buildLightTheme(),
+          darkTheme: buildDarkTheme(),
+          themeMode: themeController.themeMode,
+          // 画面の振り分けは AuthGate に任せる。ここでは行き先を決めない。
+          home: const AuthGate(),
+        ),
       ),
     );
   }

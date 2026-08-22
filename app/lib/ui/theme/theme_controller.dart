@@ -8,9 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 状態管理のパッケージは入れない。持つ値が `ThemeMode` 1つしかなく、
 /// `ChangeNotifier` で足りるため（FEAT-06 §7 と同じ判断）。
 ///
-/// ⚠️ **切替の UI はまだ無い。** 置き場所は SCR-05（設定）に1つだけと
-/// 決まっている（ADR-0024 §3）が、SCR-05 は本作業の対象外である。
-/// TODO(ADR-0024): SCR-05 にトグルを足し、[setThemeMode] を呼ぶ。
+/// 切替の UI は SCR-05（設定）に1つだけ置いてある（ADR-0024 §3）。
 class ThemeController extends ChangeNotifier {
   /// 保存先のキー。
   ///
@@ -78,6 +76,10 @@ class ThemeController extends ChangeNotifier {
 /// あり、間の画面は表示モードに関心が無い。通り道に引数を足すのは無駄である。
 ///
 /// `InheritedNotifier` を使うと、値の変化に応じて依存側だけが作り直される。
+///
+/// ⚠️ **`MaterialApp` より外に置くこと**（`main.dart`）。`home:` の中に置くと
+/// `Navigator.push` で開いた画面から見えず、[of] が落ちる。設定画面（SCR-05）は
+/// まさに push で開く画面である。
 class ThemeScope extends InheritedNotifier<ThemeController> {
   const ThemeScope({
     super.key,
