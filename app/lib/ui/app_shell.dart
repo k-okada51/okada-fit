@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/auth_repository.dart';
+import 'dashboard_page.dart';
 import 'home_page.dart';
 import 'meal_capture_page.dart';
 import 'theme/design_tokens.dart';
@@ -45,10 +46,7 @@ class _AppShellState extends State<AppShell> {
     });
   }
 
-  /// タブの中身を作る。
-  ///
-  /// SCR-04（P記録）と SCR-01（ダッシュボード）は未実装である。
-  /// **押しても落ちない**よう、案内だけを出す。
+  /// タブの中身を作る。**4つとも実画面になった**（W-12・W-17）。
   Widget _buildTab(int index) {
     switch (index) {
       case 0:
@@ -63,10 +61,7 @@ class _AppShellState extends State<AppShell> {
       case 2:
         return const TrainingRecordPage();
       default:
-        return const _ComingSoon(
-          title: 'ダッシュボード',
-          note: 'SCR-01 Dashboard（FEAT-05）。W-17 で作る。',
-        );
+        return const DashboardPage();
     }
   }
 
@@ -325,57 +320,4 @@ class NavIconPainter extends CustomPainter {
   @override
   bool shouldRepaint(NavIconPainter oldDelegate) =>
       oldDelegate.icon != icon || oldDelegate.color != color;
-}
-
-/// 未実装のタブに出す案内。
-///
-/// **押しても落ちないこと**が目的である。空白を出さない。
-class _ComingSoon extends StatelessWidget {
-  const _ComingSoon({required this.title, required this.note});
-
-  final String title;
-
-  /// どの画面が、どの作業で入るか。実装の進み具合を実機で分かるようにする。
-  final String note;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          spacing: 8,
-          children: [
-            Text(
-              title,
-              style: TextStyle(
-                color: t.textColor,
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            Text(
-              '準備中',
-              style: TextStyle(
-                color: t.accent,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            Text(
-              note,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: t.textColor.withValues(alpha: 0.6),
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }

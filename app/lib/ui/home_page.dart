@@ -3,9 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../data/auth_repository.dart';
-import '../data/profile_repository.dart';
+import '../data/dashboard_repository.dart';
+import '../domain/dashboard.dart';
 import '../domain/nutrition.dart';
-import '../domain/profile.dart';
 import 'error_snack_bar.dart';
 import 'profile_page.dart';
 import 'theme/app_theme.dart';
@@ -31,7 +31,7 @@ class HomePage extends StatefulWidget {
     super.key,
     required this.authRepository,
     required this.onOpenDashboard,
-    this.profileRepository,
+    this.dashboardRepository,
     this.today,
   });
 
@@ -42,7 +42,7 @@ class HomePage extends StatefulWidget {
   final VoidCallback onOpenDashboard;
 
   /// テストから差し替えられるよう開けてある。省略時は共有クライアントを使う。
-  final ProfileRepository? profileRepository;
+  final DashboardRepository? dashboardRepository;
 
   /// テストから「今日」を固定するために開けてある。省略時は端末の現在日。
   final DateTime? today;
@@ -52,21 +52,13 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  late final ProfileRepository _profileRepository =
-      widget.profileRepository ?? ProfileRepository();
+  late final DashboardRepository _dashboardRepository =
+      widget.dashboardRepository ?? DashboardRepository();
 
-  /// 読み込み済みの行。`null` の間は読込中か、読込に失敗している。
-  Profile? _profile;
+  /// 当日の摂取量と体重。`null` の間は読込中か、読込に失敗している。
+  Dashboard? _dashboard;
 
   bool _isLoading = true;
-
-  /// ⚠️ **ダミーである。実データではない。**
-  ///
-  /// 今日の摂取量は FEAT-05 の RPC `get_dashboard` から取る。繋ぐのは W-17。
-  /// 値はデザインの既定（朝22＋昼38＋夜0＋間食21）をそのまま使っている。
-  ///
-  /// TODO(W-17): `get_dashboard` の応答に差し替える。
-  static const double _dummyIntakeG = 81;
 
   @override
   void initState() {
@@ -74,13 +66,18 @@ class _HomePageState extends State<HomePage> {
     _load();
   }
 
-  /// 体重を読む。**目標値の唯一の入力**である（RULE-001）。
+  /// 当日分を読む。目標は体重から、摂取量は当日の `meal_logs` から出る。
+  ///
+  /// SCR-01 と同じ RPC を使う。**同じ数字が2つの画面でずれないため**である。
   Future<void> _load() async {
     setState(() => _isLoading = true);
     try {
-      final profile = await _profileRepository.fetchProfile();
+      final data = await _dashboardRepository.fetch(
+        widget.today ?? DateTime.now(),
+        DashboardPeriod.day,
+      );
       if (!mounted) return;
-      setState(() => _profile = profile);
+      setState(() => _dashboard = data);
     } catch (error) {
       if (!mounted) return;
       // 写像は error_mapper（W-05）に任せる。ここで例外を分類しない。
@@ -169,13 +166,16 @@ class _HomePageState extends State<HomePage> {
 
   /// タンパク質リング。デザインの最上段のカード。
   ///
-  /// 目標値だけが実データである。**摂取量は [_dummyIntakeG]（ダミー）。**
+  /// 目標も摂取量も実データである（W-17 でダミーを外した）。
   Widget _buildProteinCard() {
-    final target = calcTargetProteinG(_profile?.weightKg);
+    final target = _dashboard?.proteinTarget ?? const ProteinTargetUnset();
 
     switch (target) {
       case ProteinTargetOk(:final targetG):
-        return _ProteinRingCard(intakeG: _dummyIntakeG, goalG: targetG);
+        return _ProteinRingCard(
+          intakeG: _dashboard?.intakeG ?? 0,
+          goalG: targetG,
+        );
       case ProteinTargetUnset():
         // FEAT-06 未実施。**業務上は正常**である。エラーにしない。
         return _NoGoalCard(
