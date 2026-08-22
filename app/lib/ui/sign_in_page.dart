@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/auth_repository.dart';
+import 'error_snack_bar.dart';
 
 /// サインイン画面。
 ///
@@ -26,12 +27,10 @@ class _SignInPageState extends State<SignInPage> {
       await widget.authRepository.signInWithGoogle();
     } catch (error, stackTrace) {
       // 例外の分類と利用者向け文言は W-05（共通エラー処理）の担当。
-      // ここでは握り潰さず開発ログに出し、画面には定型文だけを出す。
+      // ここでは握り潰さず開発ログに出し、画面には共通ヘルパー経由で出す。
       debugPrintStack(label: 'signInWithGoogle: $error', stackTrace: stackTrace);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('サインインできませんでした。時間をおいて試してください。')),
-      );
+      showError(context, error);
     } finally {
       // 画面が消えた後の setState は例外になる。
       if (mounted) setState(() => _isSigningIn = false);
