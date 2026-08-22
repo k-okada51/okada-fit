@@ -40,6 +40,7 @@ dependencies:
   # 7.x で API が大きく変わっている（認証と認可が分離）。
   # 上げるときは lib/data/auth_repository.dart の呼び出しを確認すること。
   google_sign_in: ^7.2.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:

@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -58,13 +62,46 @@ class AuthRepository {
   /// `GoogleSignIn` はシングルトン（コンストラクタが非公開）のため差し替えできない。
   /// テストから触らせないよう、ここは静的メソッドとして分けてある。
   static Future<void> initializeGoogleSignIn() {
+    // nonce を起動ごとに1つ作る。
+    //
+    // 使い分けに注意。**同じ値を渡すと通らない**。
+    //   Google  … SHA-256 でハッシュした値
+    //   Supabase… ハッシュ前の生の値
+    // Supabase は受け取った生の値をハッシュし、ID トークン内の nonce と比べる。
+    //
+    // nonce を渡さないと 400 になる（2026-08-22 実機で確認）。
+    //   "Passed nonce and nonce in id_token should either both exist or not."
+    // google_sign_in 7.x が ID トークンに nonce を埋めるためで、
+    // Supabase 側にも同じものを渡さないと「片方だけある」と判定される。
+    //
+    // 起動ごとに1つで足りる理由。
+    // authenticate() は nonce を受け取らず、initialize() でしか渡せない。
+    // 目的は「このアプリの起動が要求したトークンか」を確かめることなので、
+    // 起動単位で固定されていれば足りる。
+    _rawNonce = _generateNonce();
     return GoogleSignIn.instance.initialize(
       // iOS 用クライアントID。ネイティブのログイン画面がこれで自分を名乗る。
       clientId: Env.googleIosClientId,
       // ウェブ用クライアントID。ID トークンの audience になり、
       // Supabase 側が同じ値で検証する。どちらか欠けると通らない。
       serverClientId: Env.googleWebClientId,
+      // Google にはハッシュ済みを渡す。生の値は外へ出さない。
+      nonce: sha256.convert(utf8.encode(_rawNonce!)).toString(),
     );
+  }
+
+  /// ハッシュ前の nonce。Supabase へはこちらを渡す。
+  static String? _rawNonce;
+
+  /// 推測されにくい nonce を作る。
+  ///
+  /// `Random.secure()` を使う。`Random()` は予測可能で、nonce の意味が消える。
+  static String _generateNonce([int length = 32]) {
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._';
+    final rand = Random.secure();
+    return List.generate(length, (_) => chars[rand.nextInt(chars.length)])
+        .join();
   }
 
   /// 認証状態の変化。購読は `StreamBuilder` で行う（ポーリングしない）。
@@ -132,6 +169,9 @@ class AuthRepository {
       provider: OAuthProvider.google,
       idToken: idToken,
       accessToken: authorization.accessToken,
+      // ハッシュ前の値を渡す。Supabase 側でハッシュして
+      // ID トークン内の nonce と突き合わせる（initializeGoogleSignIn を参照）。
+      nonce: _rawNonce,
     );
   }
 
