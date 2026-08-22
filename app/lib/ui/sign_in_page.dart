@@ -16,7 +16,7 @@ class SignInPage extends StatefulWidget {
 }
 
 class _SignInPageState extends State<SignInPage> {
-  /// 二重タップでブラウザが2回開くのを防ぐ。
+  /// 二重タップでログイン画面が2回出るのを防ぐ。
   bool _isSigningIn = false;
 
   Future<void> _signIn() async {

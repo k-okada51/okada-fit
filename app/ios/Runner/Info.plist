@@ -24,34 +24,28 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
-	<!-- ============================================================ -->
-	<!-- Google ログイン（ADR-0023）の戻り先。URL Scheme を2つ登録する。 -->
-	<!--                                                              -->
-	<!-- ★★★ 【岡田さんの作業】★★★                                 -->
-	<!--   下の REPLACE_WITH_IOS_CLIENT_ID は仮の値である。            -->
-	<!--   Google Cloud Console で iOS 用クライアントIDを作り          -->
-	<!--   （Bundle ID: jp.co.classlab.okadaFit）、その値に差し替える。 -->
-	<!--   形式は逆順クライアントID。                                  -->
-	<!--     例) クライアントID  123456-abcdef.apps.googleusercontent.com -->
-	<!--         → 逆順        com.googleusercontent.apps.123456-abcdef -->
-	<!--   ★ 差し替えを忘れると実機で Google ログインが動かない。      -->
-	<!-- ============================================================ -->
+	<!-- ================================================================= -->
+	<!-- Google ログイン（ADR-0023）が使う URL Scheme。                    -->
+	<!-- ネイティブのサインイン（signInWithIdToken）でも Google の iOS SDK -->
+	<!-- がこの登録を要求する。無いとログイン画面から戻ってこられない。    -->
+	<!--                                                                   -->
+	<!-- ★★★★★★★★★★ 【岡田さんの作業】★★★★★★★★★★      -->
+	<!--   下の REPLACE_WITH_IOS_CLIENT_ID は仮置きの値である。            -->
+	<!--                                                                   -->
+	<!--   岡田さんが Google Cloud Console で iOS 用クライアントIDを       -->
+	<!--   作成した後（Bundle ID: jp.co.classlab.okadaFit）、              -->
+	<!--   その値を逆順にしたものへ差し替えること。                        -->
+	<!--                                                                   -->
+	<!--     クライアントID  123456-abcdef.apps.googleusercontent.com      -->
+	<!--     → 逆順         com.googleusercontent.apps.123456-abcdef       -->
+	<!--                                                                   -->
+	<!--   ★ 差し替えを忘れると実機で Google ログインが動かない。          -->
+	<!--   ★ 同じクライアントIDを --dart-define=GOOGLE_IOS_CLIENT_ID にも  -->
+	<!--     渡すこと（逆順にしない元の形で）。                            -->
+	<!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
-			<!-- Supabase の OAuth からアプリへ戻すためのスキーム。 -->
-			<!-- lib/data/auth_repository.dart の _oauthRedirectUrl と一致させる。 -->
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLName</key>
-			<string>supabase-oauth-callback</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>jp.co.classlab.okadafit</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Google 側が要求する逆順クライアントID。★岡田さんが差し替える★ -->
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>

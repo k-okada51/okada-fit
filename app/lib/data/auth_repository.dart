@@ -1,5 +1,7 @@
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../core/env.dart';
 import '../core/supabase.dart';
 
 /// 認証状態から決まる行き先。
@@ -29,12 +31,12 @@ enum AuthDestination {
 AuthDestination resolveDestination(Session? session) =>
     session == null ? AuthDestination.signIn : AuthDestination.home;
 
-/// OAuth の戻り先。
+/// Google に求めるスコープ。
 ///
-/// カスタムURLスキームでアプリへ戻す。
-/// iOS 側の登録先は `ios/Runner/Info.plist` の `CFBundleURLTypes`。
-/// **スキームを変えるときは両方を直すこと。**
-const _oauthRedirectUrl = 'jp.co.classlab.okadafit://login-callback/';
+/// 認証（本人確認）だけが目的で、Google の API は叩かない。
+/// `authenticate()` が返す ID トークンには既に含まれるが、
+/// アクセストークンを得るには明示が要る（7.x で認証と認可が分かれたため）。
+const _googleScopes = <String>['email', 'profile'];
 
 /// 認証の入口。サインイン・サインアウト・認証状態の監視を持つ。
 ///
@@ -47,6 +49,23 @@ class AuthRepository {
   AuthRepository({SupabaseClient? client}) : _client = client ?? supabase;
 
   final SupabaseClient _client;
+
+  /// Google のサインインSDKを初期化する。
+  ///
+  /// `google_sign_in` 7.x は `initialize()` を**起動時にちょうど1回**呼ぶ決まりで、
+  /// 2回呼ぶと動作が未定義になる。呼ぶのは `main()` だけにすること。
+  ///
+  /// `GoogleSignIn` はシングルトン（コンストラクタが非公開）のため差し替えできない。
+  /// テストから触らせないよう、ここは静的メソッドとして分けてある。
+  static Future<void> initializeGoogleSignIn() {
+    return GoogleSignIn.instance.initialize(
+      // iOS 用クライアントID。ネイティブのログイン画面がこれで自分を名乗る。
+      clientId: Env.googleIosClientId,
+      // ウェブ用クライアントID。ID トークンの audience になり、
+      // Supabase 側が同じ値で検証する。どちらか欠けると通らない。
+      serverClientId: Env.googleWebClientId,
+    );
+  }
 
   /// 認証状態の変化。購読は `StreamBuilder` で行う（ポーリングしない）。
   ///
@@ -78,18 +97,51 @@ class AuthRepository {
 
   /// Google でサインインする（ADR-0023）。他の方式は持たない。
   ///
-  /// この関数が正常に返っても、それは**ブラウザが開いた**ところまでを意味する。
-  /// セッションが載るのは戻りのディープリンクを受けた後で、
-  /// 完了の通知は [authStateChanges] から届く。
+  /// ネイティブのログイン画面で ID トークンを取り、それを Supabase に渡す。
+  /// 外部ブラウザを開かないため、アプリ内で完結する。
   ///
-  /// 前提は iOS / Android（ADR-0010 で iOS 先行）。Web は対象外。
+  /// 戻った時点でセッションは載っている。画面の切り替えは
+  /// [authStateChanges] を購読している `AuthGate` が行う。
+  ///
+  /// 失敗時は例外がそのまま上がる（`GoogleSignInException` ／ `AuthException`）。
+  /// 利用者が選択をキャンセルした場合も例外になる。
   Future<void> signInWithGoogle() async {
-    await _client.auth.signInWithOAuth(
-      OAuthProvider.google,
-      redirectTo: _oauthRedirectUrl,
+    // 1. ネイティブのログイン画面を出す。失敗・キャンセルは例外になる。
+    final account = await GoogleSignIn.instance.authenticate(
+      // 認可も続けて行うことを伝える。対応しない環境では黙って無視される。
+      scopeHint: _googleScopes,
+    );
+
+    // 2. ID トークン（本人確認の材料）。Supabase に渡す本体はこれ。
+    final idToken = account.authentication.idToken;
+    if (idToken == null) {
+      throw const AuthException('Google から ID トークンが返らなかった');
+    }
+
+    // 3. アクセストークン。7.x では認証（authentication）と認可（authorization）が
+    //    分かれたため別に取る。まず同意済みか確認し、無ければ同意を求める。
+    final authorization =
+        await account.authorizationClient.authorizationForScopes(
+          _googleScopes,
+        ) ??
+        await account.authorizationClient.authorizeScopes(_googleScopes);
+
+    // 4. Supabase にトークンを渡してセッションを作る。
+    //    成功すると supabase_flutter が端末に保持し、以後は自動更新する。
+    await _client.auth.signInWithIdToken(
+      provider: OAuthProvider.google,
+      idToken: idToken,
+      accessToken: authorization.accessToken,
     );
   }
 
   /// サインアウトする。端末に保持したセッションも消える。
-  Future<void> signOut() => _client.auth.signOut();
+  ///
+  /// Supabase 側を先に落とす。Google 側で失敗しても、
+  /// アプリのセッションは確実に消えている状態にするため。
+  Future<void> signOut() async {
+    await _client.auth.signOut();
+    // Google 側も落とす。残すと次回サインイン時にアカウント選択が出ない。
+    await GoogleSignIn.instance.signOut();
+  }
 }
