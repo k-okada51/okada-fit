@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/auth_repository.dart';
+import 'profile_page.dart';
 
 /// ⚠️ **仮のホーム画面。W-06 以降で本物に置き換える。**
 ///
@@ -51,6 +52,14 @@ class _HomePlaceholderState extends State<HomePlaceholder> {
           children: [
             Text('サインイン中: $name'),
             const SizedBox(height: 24),
+            // SCR-05（FEAT-06）への入口。本物のホームができるまでの仮置き。
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const ProfilePage()),
+              ),
+              child: const Text('設定・プロフィール'),
+            ),
+            const SizedBox(height: 8),
             OutlinedButton(
               onPressed: _isSigningOut ? null : _signOut,
               child: const Text('サインアウト'),
