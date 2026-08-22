@@ -28,25 +28,31 @@ void main() {
       expect(validateWeightKg('300.1'), isNotNull);
     });
 
-    test('2. 小数第2位は第1位に丸められる（ADR-0022・numeric(6,1)）', () {
-      // DB の列は `numeric(6,1)`。第2位以降は保存時に丸められる。
-      // アプリ側で同じ丸めをしてから送り、「送った値」と「保存された値」を揃える。
+    test('2. 小数第2位以降は丸めずに拒否する（FEAT-06 §3.3）', () {
+      // DB の `numeric(6,1)` は送れば黙って丸める（ADR-0022）。
+      // **だからこそアプリで弾く。**
+      // 62.55 を黙って 62.6 にすると、利用者は 62.55 で保存されたと思い込む。
+      // 入力を勝手に書き換えないための規則である。
+      expect(validateWeightKg('62.56'), isNotNull, reason: '第2位を含むので拒否');
+      expect(validateWeightKg('62.34'), isNotNull);
+      expect(validateWeightKg('80.999'), isNotNull, reason: '第3位も拒否');
+
+      // 第1位までは通る。
+      expect(validateWeightKg('62.5'), isNull);
+      expect(validateWeightKg('62'), isNull, reason: '整数も 0.1 刻みに含まれる');
+      expect(validateWeightKg('62.0'), isNull);
+
+      // 範囲の判定は入力値そのもので行う。丸めてから判定しない。
+      // 19.96 は 20.0 に丸めれば通るが、そもそも第2位を含むので拒否になる。
+      expect(validateWeightKg('19.96'), isNotNull);
+    });
+
+    test('2-2. roundToOneDecimal は DB 側の挙動を写したもの（ADR-0022）', () {
+      // 検証には使わない。AI 応答（FEAT-08）など、
+      // 利用者の手入力でない値を保存する経路で使う。
       expect(roundToOneDecimal(62.56), 62.6);
       expect(roundToOneDecimal(62.34), 62.3);
       expect(roundToOneDecimal(80.99), 81.0);
-
-      // 入力欄の文字列から作る経路でも同じ結果になる。
-      expect(parseWeightKg('62.56'), 62.6);
-      expect(parseWeightKg('62.34'), 62.3);
-
-      // patch にも丸めた値が乗る。
-      final patch = buildProfileUpdate(
-        const ProfileUpdate(weightKg: FieldPatch<double>.of(62.56)),
-      );
-      expect(patch, {'weight_kg': 62.6});
-
-      // 丸めた結果で範囲を判定する。19.96 は 20.0 になるので通る。
-      expect(validateWeightKg('19.96'), isNull);
     });
 
     test('7. 数値でない文字列を弾く', () {

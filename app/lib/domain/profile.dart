@@ -219,12 +219,20 @@ String? validateWeightKg(String? input) {
   // `Infinity` `NaN` も `double.tryParse` は通す。範囲判定が効かないため先に落とす。
   if (value == null || !value.isFinite) return '体重は数字で入力してください。';
 
-  // 丸めた後の値で判定する。判定した値と保存する値を一致させるため。
-  final rounded = roundToOneDecimal(value);
   // 0以下は DB の `CHECK (weight_kg > 0)` に触れる。下限20.0がそれを含む。
-  if (rounded < kMinWeightKg || rounded > kMaxWeightKg) {
+  if (value < kMinWeightKg || value > kMaxWeightKg) {
     return '体重は${kMinWeightKg.toStringAsFixed(1)}〜'
         '${kMaxWeightKg.toStringAsFixed(1)}kgで入力してください。';
+  }
+
+  // 小数第2位以降は**丸めずに拒否する**（FEAT-06 §3.3）。
+  //
+  // DB の `numeric(6,1)` は送れば黙って丸める（ADR-0022）。
+  // だからこそアプリで弾く。62.55 を黙って 62.6 にすると、
+  // 利用者は 62.55 で保存されたと思い込む。
+  // 入力を勝手に書き換えないための規則である。
+  if (roundToOneDecimal(value) != value) {
+    return '体重は0.1kg刻みで入力してください。';
   }
   return null;
 }
