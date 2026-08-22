@@ -6,8 +6,10 @@ import 'package:image_picker/image_picker.dart';
 import '../data/error_mapper.dart';
 import '../data/meal_analyze_repository.dart';
 import '../data/meal_log_repository.dart';
+import '../data/protein_remaining_repository.dart';
 import '../domain/meal_image.dart';
 import '../domain/meal_nutrition.dart';
+import '../domain/protein_remaining.dart';
 import 'error_snack_bar.dart';
 import 'theme/app_theme.dart';
 import 'theme/design_tokens.dart';
@@ -35,6 +37,7 @@ class MealCapturePage extends StatefulWidget {
     super.key,
     this.analyzeRepository,
     this.logRepository,
+    this.remainingRepository,
     this.imagePicker,
     this.now,
   });
@@ -42,6 +45,7 @@ class MealCapturePage extends StatefulWidget {
   /// テストから差し替えられるよう開けてある。
   final MealAnalyzeRepository? analyzeRepository;
   final MealLogRepository? logRepository;
+  final ProteinRemainingRepository? remainingRepository;
   final ImagePicker? imagePicker;
 
   /// 「いま」。省略時は端末時刻（ADR-0014）。
@@ -54,6 +58,8 @@ class MealCapturePage extends StatefulWidget {
 class _MealCapturePageState extends State<MealCapturePage> {
   late final _analyze = widget.analyzeRepository ?? MealAnalyzeRepository();
   late final _logs = widget.logRepository ?? MealLogRepository();
+  late final _remainingRepo =
+      widget.remainingRepository ?? ProteinRemainingRepository();
   late final _picker = widget.imagePicker ?? ImagePicker();
 
   /// 撮った写真。**メモリ上だけ**。どこにも書かない（ADR-0003）。
@@ -75,6 +81,9 @@ class _MealCapturePageState extends State<MealCapturePage> {
 
   List<MealLogEntry> _today = const [];
 
+  /// 残量（FEAT-09）。**記録のたびに取り直す。** キャッシュしない（§3）。
+  ProteinRemaining? _remaining;
+
   DateTime get _nowValue => (widget.now ?? DateTime.now)();
 
   @override
@@ -86,9 +95,17 @@ class _MealCapturePageState extends State<MealCapturePage> {
   Future<void> _loadToday() async {
     setState(() => _isLoadingLogs = true);
     try {
-      final rows = await _logs.fetchByDate(_nowValue);
+      final now = _nowValue;
+      // 一覧と残量を並行して取る。片方を待ってからもう片方を投げる理由が無い。
+      final results = await Future.wait([
+        _logs.fetchByDate(now),
+        _remainingRepo.fetch(now),
+      ]);
       if (!mounted) return;
-      setState(() => _today = rows);
+      setState(() {
+        _today = results[0] as List<MealLogEntry>;
+        _remaining = computeProteinRemaining(results[1] as ProteinRemainingSource);
+      });
     } catch (error) {
       if (!mounted) return;
       showError(context, error, onRetry: _loadToday);
@@ -203,6 +220,7 @@ class _MealCapturePageState extends State<MealCapturePage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
             children: [
+              _buildRemaining(t),
               if (_bytes == null) _buildEmpty(t) else _buildPreview(t),
               const SizedBox(height: 18),
               if (_inputError != null) _buildMessageCard(t, _inputError!.message, t.warn),
@@ -216,6 +234,94 @@ class _MealCapturePageState extends State<MealCapturePage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 残量と、不足分を補う食品（FEAT-09）。
+  ///
+  /// **ドメイン層が出した値をそのまま出す。** ここで引き算をしない（§4 L5）。
+  Widget _buildRemaining(DesignTokens t) {
+    final remaining = _remaining;
+    if (remaining == null) return const SizedBox.shrink();
+
+    final (title, body) = switch (remaining) {
+      // 体重未設定は**正常**。エラーにしない（FEAT-07 §4.3）。
+      ProteinRemainingUnset() => ('残り', '体重を登録すると、あと何g必要かが出ます。'),
+      ProteinRemainingInvalid() => ('残り', '体重の値を確認してください。'),
+      ProteinRemainingOk(:final remainingG, :final targetG, :final intakeG) =>
+        remainingG <= 0
+            ? ('目標達成', '${intakeG.round()}g / ${targetG.round()}g')
+            : ('あと ${remainingG.round()}g', '${intakeG.round()}g / ${targetG.round()}g'),
+    };
+
+    final suggestions = remaining is ProteinRemainingOk
+        ? remaining.suggestions
+        : const <FoodCandidate>[];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: SurfaceCard(
+        radius: Dimens.radiusCard,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 8,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)
+                        .merge(kTabularFigures)
+                        .copyWith(color: t.accent),
+                  ),
+                ),
+                Text(
+                  body,
+                  style: const TextStyle(fontSize: 12)
+                      .merge(kTabularFigures)
+                      .copyWith(color: t.textColor.withValues(alpha: 0.7)),
+                ),
+              ],
+            ),
+            if (suggestions.isNotEmpty) ...[
+              Text(
+                '不足分を補うなら',
+                style: TextStyle(
+                  color: t.textColor.withValues(alpha: 0.6),
+                  fontSize: 11,
+                ),
+              ),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final food in suggestions)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: t.ctaSoft,
+                        borderRadius: BorderRadius.circular(Dimens.radiusChip),
+                        border: Border.all(color: t.accentBorder),
+                      ),
+                      child: Text(
+                        '${food.foodName} ${food.proteinAmount.round()}g',
+                        style: TextStyle(
+                          color: t.accent,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 

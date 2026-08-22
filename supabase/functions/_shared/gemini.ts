@@ -54,6 +54,12 @@ export interface GeminiCallInput {
   /// `generationConfig.response_schema` に載せる JSON Schema。
   responseSchema: unknown;
   correlationId: string;
+  /// 役割・制約の指示。省略すると付けない（FEAT-08 は使わない）。
+  systemInstruction?: string;
+  /// 応答を待つ上限。省略すると [GEMINI_TIMEOUT_MS]。
+  ///
+  /// 機能ごとに NFR が違う。FEAT-08 は ≤20秒、FEAT-03 は ≤15秒。
+  timeoutMs?: number;
 }
 
 export interface GeminiCallResult {
@@ -97,6 +103,10 @@ export async function callGemini(input: GeminiCallInput): Promise<GeminiCallResu
       },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: input.parts }],
+        // 付けないときはキーごと出さない。空の指示を送らない。
+        ...(input.systemInstruction === undefined
+          ? {}
+          : { systemInstruction: { parts: [{ text: input.systemInstruction }] } }),
         generationConfig: {
           response_mime_type: 'application/json',
           response_schema: input.responseSchema,
@@ -104,7 +114,7 @@ export async function callGemini(input: GeminiCallInput): Promise<GeminiCallResu
           thinkingConfig: { thinkingLevel: THINKING_LEVEL },
         },
       }),
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      signal: AbortSignal.timeout(input.timeoutMs ?? GEMINI_TIMEOUT_MS),
     });
   } catch (error) {
     // 中断（タイムアウト）と接続断をまとめて 504 にする。
