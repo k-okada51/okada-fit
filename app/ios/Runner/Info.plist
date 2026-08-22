@@ -29,8 +29,8 @@
 	<!-- ネイティブのサインイン（signInWithIdToken）でも Google の iOS SDK -->
 	<!-- がこの登録を要求する。無いとログイン画面から戻ってこられない。    -->
 	<!--                                                                   -->
-	<!-- ★★★★★★★★★★ 【岡田さんの作業】★★★★★★★★★★      -->
-	<!--   下の REPLACE_WITH_IOS_CLIENT_ID は仮置きの値である。            -->
+	<!-- ★★★★★★★★★★ 【反映済み 2026-08-22】★★★★★★★★★★ -->
+	<!--   iOS 用クライアントIDを逆順にした値を設定済み。                 -->
 	<!--                                                                   -->
 	<!--   岡田さんが Google Cloud Console で iOS 用クライアントIDを       -->
 	<!--   作成した後（Bundle ID: jp.co.classlab.okadaFit）、              -->
@@ -52,7 +52,7 @@
 			<string>google-reversed-client-id</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.REPLACE_WITH_IOS_CLIENT_ID</string>
+				<string>com.googleusercontent.apps.15058703962-2tbavo9g0uu6tm9ukhf14i4a05ikgk88</string>
 			</array>
 		</dict>
 	</array>
