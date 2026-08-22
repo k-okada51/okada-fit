@@ -379,10 +379,12 @@ class RowError { final int line; final String column; final String reasonCode; }
 -- 衝突判定は uq_foods_name（foods(name) の UNIQUE INDEX・01_DB物理設計.md §1.5）。
 -- supabase_flutter の .insert() でも on conflict は書けるが、件数の内訳を1往復で返す目的で
 -- DB関数（RPC）にまとめる。
+-- SECURITY INVOKER である。foods は共通マスタで、認証済みなら誰でも書ける（01_DB物理設計.md §3.4）。
+-- DEFINER にして RLS を迂回する理由が無い。全 RPC が INVOKER で統一されている（02_API設計.md §3）。
 create or replace function import_foods(p_rows jsonb)
 returns table (inserted_count bigint, skipped_count bigint)
 language plpgsql
-security definer
+security invoker   -- 2026-08-22 修正: definer → invoker（RLS を迂回しない）
 as $$
 declare v_total bigint; v_inserted bigint;
 begin
