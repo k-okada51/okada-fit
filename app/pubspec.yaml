@@ -41,6 +41,13 @@ dependencies:
   # 上げるときは lib/data/auth_repository.dart の呼び出しを確認すること。
   google_sign_in: ^7.2.0
   crypto: ^3.0.7
+  # CSVファイルの選択（FEAT-10）。
+  # 12.x は PlatformFile が size/bytes をやめ、length()/readAsBytes() になった。
+  file_picker: ^12.0.0
+  # Shift_JIS(CP932) のデコード（FEAT-10 §4-1）。**純 Dart。**
+  # charset_converter は OS のコンバータを呼ぶため実機でしか確かめられない。
+  # こちらは単体テストで文字化けの有無を確認できる。
+  charset: ^2.0.1
 
 dev_dependencies:
   flutter_test:
