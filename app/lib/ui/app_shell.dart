@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/auth_repository.dart';
 import 'home_page.dart';
+import 'meal_capture_page.dart';
 import 'theme/design_tokens.dart';
 import 'training_record_page.dart';
 
@@ -58,10 +59,7 @@ class _AppShellState extends State<AppShell> {
           onOpenDashboard: () => _select(3),
         );
       case 1:
-        return const _ComingSoon(
-          title: 'P記録',
-          note: 'SCR-04 食事記録（FEAT-08）。W-12 で作る。',
-        );
+        return const MealCapturePage();
       case 2:
         return const TrainingRecordPage();
       default:
@@ -130,7 +128,7 @@ class _AppShellState extends State<AppShell> {
             // CTA はホームにしか無い（SCR-00）。他のタブでは出さない。
             if (_index == 0)
               HomeRecordCta(
-                // 記録先は SCR-04。未実装なのでタブを切り替えて案内を出す。
+                // 記録先は SCR-04（P記録タブ）。
                 onPressed: () => _select(1),
               ),
             _buildNav(t),

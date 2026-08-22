@@ -98,5 +98,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- 食事写真の撮影・選択（FEAT-08）。iOS はこの文言が無いと起動時に落とす。 -->
+	<!-- 写真は解析のために1回送るだけで、端末にもサーバにも残さない（ADR-0003）。 -->
+	<key>NSCameraUsageDescription</key>
+	<string>食事の写真を撮って、タンパク質量を推定するために使います。写真は保存されません。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>保存済みの食事写真から、タンパク質量を推定するために使います。写真は保存されません。</string>
 </dict>
 </plist>

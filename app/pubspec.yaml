@@ -48,6 +48,11 @@ dependencies:
   # charset_converter は OS のコンバータを呼ぶため実機でしか確かめられない。
   # こちらは単体テストで文字化けの有無を確認できる。
   charset: ^2.0.1
+  # 食事写真の撮影・選択（FEAT-08）。
+  # **縮小もこれに任せる。** maxWidth/maxHeight でプラットフォーム側が縮小する
+  # （ADR-0003 の長辺1024px）。Dart で decode/encode すると 4000x3000 の写真で
+  # 秒単位かかる。image パッケージを足さずに済む。
+  image_picker: ^1.1.2
   # ダーク／ライトの選択を端末に保存する（ADR-0024 §3）。
   # 保存するのはこの1項目だけ。設定の保管庫として広げない。
   shared_preferences: ^2.5.5
