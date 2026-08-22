@@ -17,11 +17,11 @@
 // Storage にも DB にもログにも書かない。ログに出してよいのはバイト長だけ。
 
 import {
-  actorFromAuthHeader,
   AppError,
   jsonResponse,
   logJson,
   newCorrelationId,
+  requireUserId,
   toErrorResponse,
 } from '../_shared/errors.ts';
 import { callGemini } from '../_shared/gemini.ts';
@@ -48,7 +48,11 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // ① 本文を読む。JSON として壊れていても ERR-MEAL-001 に畳む。
+    // ① ログイン済みでなければここで止める（ERR-AUTH-001）。
+    //    **本文を読むより先に見る。** 匿名の呼び出しに本文を読ませる理由が無い。
+    const actor = requireUserId(req.headers.get('authorization'));
+
+    // 本文を読む。JSON として壊れていても ERR-MEAL-001 に畳む。
     //    利用者から見れば「写真を送れなかった」であり、原因の区別に意味が無い。
     let body: unknown;
     try {
@@ -64,7 +68,6 @@ Deno.serve(async (req: Request) => {
     }
 
     const input = parseAnalyzeMealRequest(body);
-    const actor = actorFromAuthHeader(req.headers.get('authorization'));
 
     // 監査ログ。**外部送信の前に**1件記録する（NFR-SEC-AUDIT-01）。
     // 送信後に書くと、送信直後に落ちた場合に記録が残らない。

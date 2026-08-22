@@ -96,19 +96,58 @@ export function newCorrelationId(): string {
   return crypto.randomUUID();
 }
 
-/// 呼び出した本人の uuid を取り出す。監査ログの `actor` になる。
+/// 呼び出した本人の uuid を返す。ログインしていなければ 401 で止める。
 ///
-/// **署名は検証しない。** Supabase が `verify_jwt` で検証済みのものだけが
-/// ここへ届く。二重に検証しても得るものが無い。
-/// 取り出せなければ `unknown` にする。監査ログのために処理を止めない。
-export function actorFromAuthHeader(header: string | null): string {
+/// ## なぜ要るか
+///
+/// **Supabase の `verify_jwt` は publishable key を通す。** つまりログインして
+/// いなくても関数を呼べる。そのキーはアプリのバイナリに埋まっている。
+///
+/// レート制限は実装しない決定である（ADR-0016）。キーが漏れた場合、
+/// **日次クォータを使い切られるまで止める手段が無い**。課金を伴う関数で
+/// 匿名呼び出しを許す理由が無いため、ここで塞ぐ。
+///
+/// 設計も `ERR-AUTH-001`（401）を定義している（FEAT-08 §6）。
+///
+/// ## 署名は検証しない
+///
+/// Supabase が `verify_jwt` で検証済みのものだけが届く。ここで見るのは
+/// **「本人のトークンか、それとも匿名のキーか」**の区別だけである。
+/// 二重に署名検証しても得るものが無い。
+///
+/// 純関数なのでテストから直接呼べる。
+export function requireUserId(header: string | null): string {
+  const claims = readJwtClaims(header);
+
+  // publishable key（`sb_publishable_...`）は JWT ですらないのでここで落ちる。
+  // 匿名セッションの JWT は `role: 'anon'` で届くため、これも通さない。
+  if (!claims || claims.role !== 'authenticated' || !claims.sub) {
+    throw new AppError(
+      'ERR-AUTH-001',
+      401,
+      'ログインし直してください。',
+      false,
+      `role=${claims?.role ?? '-'} sub=${claims?.sub ? 'あり' : 'なし'}`,
+    );
+  }
+  return claims.sub;
+}
+
+interface JwtClaims {
+  sub?: string;
+  role?: string;
+}
+
+/// JWT のペイロードを読む。JWT でなければ `null`。
+function readJwtClaims(header: string | null): JwtClaims | null {
   try {
     const token = (header ?? '').replace(/^Bearer\s+/i, '');
     const payload = token.split('.')[1];
-    if (!payload) return 'unknown';
-    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-    return (JSON.parse(json).sub as string | undefined) ?? 'unknown';
+    if (!payload) return null;
+    // base64url を base64 へ直す。`atob` は `-` `_` を受け付けない。
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64)) as JwtClaims;
   } catch {
-    return 'unknown';
+    return null;
   }
 }

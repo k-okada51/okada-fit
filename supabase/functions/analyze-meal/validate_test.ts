@@ -9,7 +9,7 @@
 
 import { assertEquals, assertThrows } from 'jsr:@std/assert@1';
 
-import { AppError } from '../_shared/errors.ts';
+import { AppError, requireUserId } from '../_shared/errors.ts';
 import { mapGeminiHttpError } from '../_shared/gemini.ts';
 import { MAX_IMAGE_BYTES, MIN_IMAGE_BYTES } from './schema.ts';
 import {
@@ -294,4 +294,39 @@ Deno.test('利用者向けメッセージに技術詳細を出さない（02_API
   // 原因はログ用の detail にだけ入る。
   assertEquals(error.userMessage.includes('handler.go'), false);
   assertEquals(error.userMessage.includes('500'), false);
+});
+
+// --- 認証（ERR-AUTH-001） ---
+//
+// **Supabase の verify_jwt は publishable key を通す。** ログインしていなくても
+// 関数を呼べてしまう。課金を伴う関数なので、ここで塞げているかを確かめる。
+
+/// `sub` と `role` だけを持つ最小の JWT（署名は検証されないのでダミーでよい）。
+function fakeJwt(claims: Record<string, unknown>): string {
+  const b64 = (o: unknown) =>
+    btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(claims)}.signature`;
+}
+
+Deno.test('requireUserId — ログイン済みなら uuid を返す', () => {
+  const token = fakeJwt({ sub: '11111111-2222-3333-4444-555555555555', role: 'authenticated' });
+  assertEquals(requireUserId(`Bearer ${token}`), '11111111-2222-3333-4444-555555555555');
+});
+
+Deno.test('ERR-AUTH-001 — publishable key・匿名・欠落を弾く', () => {
+  // publishable key は JWT ですらない。
+  assertEquals(codeOf(() => requireUserId('Bearer sb_publishable_xxxxxxxx')), 'ERR-AUTH-001');
+  // 匿名セッションの JWT。`sub` があっても role が違えば通さない。
+  assertEquals(
+    codeOf(() => requireUserId(`Bearer ${fakeJwt({ sub: 'x', role: 'anon' })}`)),
+    'ERR-AUTH-001',
+  );
+  // role は合っていても sub が無いものは通さない。
+  assertEquals(
+    codeOf(() => requireUserId(`Bearer ${fakeJwt({ role: 'authenticated' })}`)),
+    'ERR-AUTH-001',
+  );
+  assertEquals(codeOf(() => requireUserId(null)), 'ERR-AUTH-001');
+  assertEquals(codeOf(() => requireUserId('')), 'ERR-AUTH-001');
+  assertEquals(codeOf(() => requireUserId('Bearer not.a.jwt')), 'ERR-AUTH-001');
 });
