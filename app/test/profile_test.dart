@@ -201,4 +201,66 @@ void main() {
       expect(patch.keys.toSet(), {'name', 'target_training_count', 'weight_kg'});
     });
   });
+
+  group('± ステッパー（`SCR-05 設定.dc.html`）', () {
+    test('体重は 0.1kg 刻みで動く', () {
+      expect(stepWeightText('62.5', kWeightStepKg), '62.6');
+      expect(stepWeightText('62.5', -kWeightStepKg), '62.4');
+      // 整数入力にも小数第1位を付けて返す。表示が 62 → 62.1 と跳ねない。
+      expect(stepWeightText('62', kWeightStepKg), '62.1');
+    });
+
+    test('二進の誤差で 0.1kg 刻みを外さない', () {
+      // `62.5 + 0.1` は 62.60000000000001 になる。そのまま入れると
+      // validateWeightKg が自分の作った値を拒否する。
+      for (var text = '20.0', i = 0; i < 200; i++) {
+        final next = stepWeightText(text, kWeightStepKg)!;
+        expect(
+          validateWeightKg(next),
+          isNull,
+          reason: '$text の次が $next で弾かれた',
+        );
+        text = next;
+      }
+    });
+
+    test('上下限で頭打ちになる（押し続けても validator を割らない）', () {
+      expect(stepWeightText('300.0', kWeightStepKg), '300.0');
+      expect(stepWeightText('20.0', -kWeightStepKg), '20.0');
+      expect(validateWeightKg(stepWeightText('300.0', kWeightStepKg)), isNull);
+      expect(validateWeightKg(stepWeightText('20.0', -kWeightStepKg)), isNull);
+    });
+
+    test('空欄・読めない値からは動かさない（体重に既定を置かない）', () {
+      // FEAT-06 §4.2。押しただけで利用者が入れていない体重を作らない。
+      // 呼び出し側はこの null を見てボタンを非活性にする。
+      expect(stepWeightText('', kWeightStepKg), isNull);
+      expect(stepWeightText(null, kWeightStepKg), isNull);
+      expect(stepWeightText('  ', kWeightStepKg), isNull);
+      expect(stepWeightText('.', kWeightStepKg), isNull);
+      expect(stepWeightText('abc', kWeightStepKg), isNull);
+    });
+
+    test('目標回数は 0〜31 で頭打ちになる（月・ADR-0024 §4 #7）', () {
+      expect(stepTargetTrainingCountText('12', 1), '13');
+      expect(stepTargetTrainingCountText('12', -1), '11');
+
+      // デザインの上限7ではなく kMaxTargetTrainingCount が効く。
+      expect(stepTargetTrainingCountText('31', 1), '31');
+      expect(stepTargetTrainingCountText('7', 1), '8');
+
+      // 0 は「目標を置かない」であって異常ではない。
+      expect(stepTargetTrainingCountText('0', -1), '0');
+      expect(
+        validateTargetTrainingCount(stepTargetTrainingCountText('0', -1)),
+        isNull,
+      );
+    });
+
+    test('目標回数は空欄からでも動く（既定12が出発点）', () {
+      // 体重と違い、この値には既定がある（RULE-007）。
+      expect(stepTargetTrainingCountText('', 1), '13');
+      expect(stepTargetTrainingCountText(null, -1), '11');
+    });
+  });
 }

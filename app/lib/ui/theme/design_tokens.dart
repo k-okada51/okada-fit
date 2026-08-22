@@ -30,6 +30,8 @@ class DesignTokens {
     required this.ctaSoft,
     required this.warn,
     required this.ringTrack,
+    required this.accentBorder,
+    required this.switchTrackOff,
   });
 
   /// アクセント色。選択中のタブ・強調文字に使う。
@@ -89,6 +91,22 @@ class DesignTokens {
   /// リングを描くのに要るが、他の用途には広げない。
   final Color ringTrack;
 
+  /// アクセント色の罫線。[ctaSoft] を敷いた面の縁に使う。
+  ///
+  /// ⚠️ ADR-0024 §2 の表に無い。**`SCR-05 設定.dc.html` の `accentBorder`** から
+  /// 採った。SCR-05 のタンパク質目標カードの縁がこれである。
+  final Color accentBorder;
+
+  /// トグルスイッチの軌道（OFF のとき）。ON のときは [fill] を使う。
+  ///
+  /// ⚠️ ADR-0024 §2 の表に無い。**`SCR-05 設定.dc.html` の `switchBg`** から
+  /// 採った。デザインは `dark ? fill : rgba(15,23,42,0.22)` の1行しか持たない。
+  ///
+  /// ダーク側の値はデザインに**無い**。ダークモードのトグルは OFF になった時点で
+  /// ライトのトークンに切り替わるため、ダークの OFF 面が画面に出ることがない。
+  /// 別のトグルが増えたときのために置いてあるだけの値である。
+  final Color switchTrackOff;
+
   /// ダーク。**こちらが既定**（ADR-0024 §3）。
   static const DesignTokens dark = DesignTokens(
     accent: Color(0xFF12D9A0),
@@ -110,6 +128,8 @@ class DesignTokens {
     ctaSoft: Color.fromRGBO(18, 217, 160, 0.09),
     warn: Color(0xFFF5A623),
     ringTrack: Color.fromRGBO(255, 255, 255, 0.08),
+    accentBorder: Color.fromRGBO(18, 217, 160, 0.35),
+    switchTrackOff: Color.fromRGBO(255, 255, 255, 0.14),
   );
 
   /// ライト。
@@ -129,6 +149,8 @@ class DesignTokens {
     ctaSoft: Color.fromRGBO(4, 120, 87, 0.08),
     warn: Color(0xFFB45309),
     ringTrack: Color.fromRGBO(15, 23, 42, 0.09),
+    accentBorder: Color.fromRGBO(4, 120, 87, 0.35),
+    switchTrackOff: Color.fromRGBO(15, 23, 42, 0.22),
   );
 
   /// 明暗から対応する組を返す。

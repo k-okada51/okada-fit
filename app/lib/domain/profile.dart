@@ -258,3 +258,49 @@ int? parseTargetTrainingCount(String? input) {
   if (text.isEmpty) return null;
   return int.tryParse(text);
 }
+
+/// 体重の刻み(kg)。`SCR-05 設定.dc.html` の「0.1kg単位で調整できます」。
+///
+/// `numeric(6,1)` の精度と一致する（ADR-0022）。刻みを 0.1 より細かくすると、
+/// [validateWeightKg] が拒否する値をボタンで作れてしまう。
+const kWeightStepKg = 0.1;
+
+/// 体重の入力欄を [deltaKg] だけ動かした文字列を返す（SCR-05 の ± ボタン）。
+///
+/// **空欄・読めない値からは動かさない。`null` を返す。**
+/// 体重には既定値を置かないと決めている（FEAT-06 §4.2。推測してはならない値）。
+/// 「＋を1回押したら 20.0kg」のような、利用者が入れていない値をここで作らない。
+/// 呼び出し側はボタンを非活性にすること。
+///
+/// 上下限（[kMinWeightKg]〜[kMaxWeightKg]）で頭打ちにする。押し続けても
+/// [validateWeightKg] が弾く値にはならない。
+String? stepWeightText(String? input, double deltaKg) {
+  final text = (input ?? '').trim();
+  if (text.isEmpty) return null;
+
+  final value = double.tryParse(text);
+  if (value == null || !value.isFinite) return null;
+
+  // **0.1 単位の個数に直してから足す。** 0.1 は二進で表せないため、
+  // `62.5 + 0.1` は 62.60000000000001 になる。そのまま入れると
+  // [validateWeightKg] の「0.1kg刻み」に自分で違反する。
+  final tenths = (value * 10).round() + (deltaKg * 10).round();
+  final stepped = tenths / 10;
+
+  return stepped.clamp(kMinWeightKg, kMaxWeightKg).toStringAsFixed(1);
+}
+
+/// 目標トレーニング回数を [delta] だけ動かした文字列を返す（SCR-05 の ± ボタン）。
+///
+/// **こちらは空欄からでも動かせる。** 体重と違い、この値には既定がある
+/// （[kDefaultTargetTrainingCount]＝12・RULE-007）。空欄は「読むときに 12 が
+/// 補われる状態」なので、12 を出発点にして動かす。
+///
+/// ⚠️ デザインは**週**・上限7で作られているが、**月・0〜31 が正**である
+/// （ADR-0024 §4 #7）。上限は [kMaxTargetTrainingCount]。
+String stepTargetTrainingCountText(String? input, int delta) {
+  final text = (input ?? '').trim();
+  final current = int.tryParse(text) ?? kDefaultTargetTrainingCount;
+  // 下限0は「目標を置かない」であって異常ではない（[validateTargetTrainingCount]）。
+  return (current + delta).clamp(0, kMaxTargetTrainingCount).toString();
+}

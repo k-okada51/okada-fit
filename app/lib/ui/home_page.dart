@@ -7,11 +7,10 @@ import '../data/profile_repository.dart';
 import '../domain/nutrition.dart';
 import '../domain/profile.dart';
 import 'error_snack_bar.dart';
-import 'food_list_page.dart';
-import 'machine_list_page.dart';
 import 'profile_page.dart';
 import 'theme/app_theme.dart';
 import 'theme/design_tokens.dart';
+import 'widgets/surface_card.dart';
 
 /// SCR-00 トップ（ADR-0024）。
 ///
@@ -36,6 +35,7 @@ class HomePage extends StatefulWidget {
     this.today,
   });
 
+  /// SCR-05 へ渡すだけ。**この画面はサインアウトを持たない**（SCR-05 へ移した）。
   final AuthRepository authRepository;
 
   /// 「記録を振り返る」を押したとき。行き先は SCR-01（ダッシュボードのタブ）。
@@ -59,9 +59,6 @@ class _HomePageState extends State<HomePage> {
   Profile? _profile;
 
   bool _isLoading = true;
-
-  /// 二重タップ防止。
-  bool _isSigningOut = false;
 
   /// ⚠️ **ダミーである。実データではない。**
   ///
@@ -93,35 +90,15 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _signOut() async {
-    if (_isSigningOut) return;
-    setState(() => _isSigningOut = true);
-    try {
-      await widget.authRepository.signOut();
-      // 画面の切り替えは AuthGate が `onAuthStateChange` を受けて行う。
-      // ここで Navigator を触らない。
-    } catch (error, stackTrace) {
-      debugPrintStack(label: 'signOut: $error', stackTrace: stackTrace);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('サインアウトできませんでした。時間をおいて試してください。')),
-      );
-    } finally {
-      if (mounted) setState(() => _isSigningOut = false);
-    }
-  }
-
-  void _open(Widget page) {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
-  }
-
   /// 設定（SCR-05）を開いて、戻ったら体重を読み直す。
   ///
   /// 体重が変われば目標値も変わる。戻った画面に古い数字を残さない。
   Future<void> _openSettings() async {
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => const ProfilePage()));
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProfilePage(authRepository: widget.authRepository),
+      ),
+    );
     if (!mounted) return;
     await _load();
   }
@@ -186,8 +163,6 @@ class _HomePageState extends State<HomePage> {
         _buildProteinCard(),
         const SizedBox(height: 18),
         _buildLookBackCard(),
-        const SizedBox(height: 18),
-        _buildTemporaryMenu(),
       ],
     );
   }
@@ -223,7 +198,7 @@ class _HomePageState extends State<HomePage> {
   Widget _buildLookBackCard() {
     final t = context.tokens;
 
-    return _SurfaceCard(
+    return SurfaceCard(
       radius: Dimens.radiusCta,
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       onTap: widget.onOpenDashboard,
@@ -264,51 +239,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// ⚠️ **暫定の入口。デザインには無い。**
-  ///
-  /// 置き場所は SCR-05（設定）が正しい（ADR-0024 §1 の「設定・器具登録・食品
-  /// マスタはタブに置かない。歯車 → SCR-05 → 各画面へ辿る」）。
-  /// ただし SCR-05 は本作業の対象外で、`profile_page.dart` を触れない。
-  /// 消すと実装済みの2画面が実機から辿れなくなるため、当面ここに置く。
-  ///
-  /// サインアウトも同じ理由で残す。`home_placeholder.dart` から引き継いだ。
-  ///
-  /// TODO(ADR-0024): SCR-05 へ移し、このブロックごと消す。
-  Widget _buildTemporaryMenu() {
-    final t = context.tokens;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 8,
-      children: [
-        Text(
-          '（暫定）設定画面ができるまでの入口',
-          style: TextStyle(
-            color: t.textColor.withValues(alpha: 0.5),
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        _SurfaceCard(
-          radius: Dimens.radiusCta,
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          onTap: () => _open(const MachineListPage()),
-          child: _RowLabel(text: '器具・種目の登録', note: 'FEAT-01 / SCR-02'),
-        ),
-        _SurfaceCard(
-          radius: Dimens.radiusCta,
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          onTap: () => _open(const FoodListPage()),
-          child: _RowLabel(text: '食品マスタ', note: 'FEAT-10 / 一覧・編集・CSV取込'),
-        ),
-        const SizedBox(height: 4),
-        OutlinedButton(
-          onPressed: _isSigningOut ? null : _signOut,
-          child: const Text('サインアウト'),
-        ),
-      ],
-    );
-  }
 }
 
 /// SCR-00 の CTA。「タンパク質を記録する」。
@@ -393,7 +323,7 @@ class _ProteinRingCard extends StatelessWidget {
     final remaining = math.max(0.0, goalG - intakeG);
     final isDone = remaining <= 0;
 
-    return _SurfaceCard(
+    return SurfaceCard(
       radius: Dimens.radiusCard,
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
       child: Row(
@@ -576,7 +506,7 @@ class _NoGoalCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
 
-    return _SurfaceCard(
+    return SurfaceCard(
       radius: Dimens.radiusCard,
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
       child: Column(
@@ -601,94 +531,6 @@ class _NoGoalCard extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// デザインの「面」。`background:surface` ＋ `border:1px solid hairline`。
-///
-/// 角丸だけがカード（16）と行（14）で違うので引数に開けてある。
-class _SurfaceCard extends StatelessWidget {
-  const _SurfaceCard({
-    required this.radius,
-    required this.padding,
-    required this.child,
-    this.onTap,
-  });
-
-  final double radius;
-  final EdgeInsets padding;
-  final Widget child;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final borderRadius = BorderRadius.circular(radius);
-
-    return Material(
-      // `surface` はダークだと半透明である。地色を透かすため色は Ink 側に置かない。
-      color: Colors.transparent,
-      child: Ink(
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: borderRadius,
-          border: Border.all(color: t.hairline),
-        ),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: borderRadius,
-          child: Padding(padding: padding, child: child),
-        ),
-      ),
-    );
-  }
-}
-
-/// 暫定メニューの1行。見出しと補足。
-class _RowLabel extends StatelessWidget {
-  const _RowLabel({required this.text, required this.note});
-
-  final String text;
-  final String note;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            spacing: 3,
-            children: [
-              Text(
-                text,
-                style: TextStyle(
-                  color: t.textColor,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              Text(
-                note,
-                style: TextStyle(
-                  color: t.textColor.withValues(alpha: 0.72),
-                  fontSize: 11,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Text(
-          '→',
-          style: TextStyle(
-            color: t.textColor.withValues(alpha: 0.55),
-            fontSize: 16,
-          ),
-        ),
-      ],
     );
   }
 }

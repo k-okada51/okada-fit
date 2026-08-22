@@ -228,4 +228,27 @@ void main() {
       }
     });
   });
+
+  group('1食あたりの目安（`SCR-05 設定.dc.html`）', () {
+    test('目標を kMealsPerDay で割る', () {
+      expect(kMealsPerDay, 4, reason: 'デザインの「1食あたりの目安（4食）」');
+      expect(proteinPerMealG(140.0), 35.0);
+      expect(proteinPerMealG(125.0), 31.3, reason: '31.25 を小数第1位へ');
+      expect(proteinPerMealG(0.0), 0.0);
+    });
+
+    test('丸めは roundProteinG と同じ規則（小数第1位・half away from zero）', () {
+      // 130 / 4 = 32.5 → そのまま。126 / 4 = 31.5 → そのまま。
+      expect(proteinPerMealG(130.0), 32.5);
+      // 125.4 / 4 = 31.35 → 31.4（絶対値の大きいほうへ）。
+      expect(proteinPerMealG(125.4), 31.4);
+    });
+
+    test('目標の丸め後の値を割る（画面の2つの数字が同じ元値から出る）', () {
+      // SCR-05 は calcTargetProteinG の targetG をそのまま渡す。
+      final target = calcTargetProteinG(62.5) as ProteinTargetOk;
+      expect(target.targetG, 125.0);
+      expect(proteinPerMealG(target.targetG), 31.3);
+    });
+  });
 }

@@ -43,6 +43,27 @@ const double proteinGPerKg = 2.0;
 /// （設計に記述が無い）。[calcTargetProteinG] は渡す前に必ず判定している。
 double roundProteinG(double value) => (value * 10).round() / 10;
 
+/// 1日を何食に割るか。
+///
+/// ⚠️ **設計書に無い。デザインにしかない概念である。** `SCR-05 設定.dc.html` の
+/// 「1食あたりの目安（4食）」＝ `Math.round(goal / 4)` から採った。
+/// ADR-0024 §5 A が「デザインが正しく、実装が漏れている」とした箇所にあたる。
+///
+/// **食事スロットを持つという意味ではない。** `meal_logs` に時間帯の列は無く、
+/// 記録側は何も分類しない（ADR-0024 の ⚠️ はそちらの話である）。
+/// ここは目標値を4で割って見せるだけで、DB にも RPC にも影響しない。
+const int kMealsPerDay = 4;
+
+/// 1食あたりの目安(g)。目標を [kMealsPerDay] で割る。
+///
+/// 丸めは [roundProteinG] に合わせる（小数第1位）。**表示丸め（整数 g）は
+/// UI 層の担当**である（§4.2）。ここでは整数にしない。
+///
+/// 入力には [ProteinTargetOk.targetG] を渡す。丸め済みの値を割るため、
+/// 「目標 ◯g・1食 ◯g」の2つが同じ元値から出ていることが保証される。
+double proteinPerMealG(double targetG) =>
+    roundProteinG(targetG / kMealsPerDay);
+
 /// [calcTargetProteinG] の結果（§3.0）。
 ///
 /// `double?` 単独にしない。`null` では「未設定（FEAT-06 未実施＝正常）」と
